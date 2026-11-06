@@ -14,7 +14,7 @@ if [[ -x .venv/bin/cmake && -x .venv/bin/ctest && -x .venv/bin/ninja ]]; then
 fi
 tools_valid() {
   command -v cmake >/dev/null && command -v ctest >/dev/null && command -v ninja >/dev/null || return 1
-  python3 -c 'import re,subprocess,sys; v=re.search(r"(\d+)\.(\d+)",subprocess.check_output(["cmake","--version"],text=True)); sys.exit(not v or tuple(map(int,v.groups())) < (3,20))' &&
+  python3 -c 'import re,subprocess,sys; v=re.search(r"(\d+)\.(\d+)",subprocess.check_output(["cmake","--version"],text=True)); sys.exit(not v or tuple(map(int,v.groups())) < (3,24))' &&
   python3 -c 'import re,subprocess,sys; v=re.search(r"(\d+)\.(\d+)",subprocess.check_output(["ninja","--version"],text=True)); sys.exit(not v or tuple(map(int,v.groups())) < (1,10))'
 }
 if ! tools_valid; then

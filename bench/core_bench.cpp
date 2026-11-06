@@ -1,6 +1,8 @@
 #include "asterbook/engine.hpp"
 #include <algorithm>
 #include <chrono>
+#include <charconv>
+#include <limits>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -8,10 +10,17 @@
 using namespace asterbook;
 using Clock = std::chrono::steady_clock;
 int main(int argc, char **argv) {
-  const int n = argc > 1 ? std::atoi(argv[1]) : 10000;
+  int n = 10000;
+  if (argc > 1) {
+    const std::string count = argv[1];
+    auto [end, error] = std::from_chars(count.data(), count.data() + count.size(), n);
+    if (error != std::errc{} || end != count.data() + count.size())
+      n = 0;
+  }
   const std::string workload = argc > 2 ? argv[2] : "add";
   const std::string allocator = argc > 3 ? argv[3] : "baseline";
   if ((allocator != "baseline" && allocator != "pooled") || n < 1 ||
+      n > (std::numeric_limits<int>::max() - 1) / 11 ||
       (workload != "add" && workload != "cancel" && workload != "cross" && workload != "deep")) {
     std::cerr << "usage: core_bench [count] [add|cancel|cross|deep] [baseline|pooled]\n";
     return 2;
@@ -63,6 +72,14 @@ int main(int argc, char **argv) {
         r.code != expected.code || r.events.size() != expected.events.size()) {
       std::cerr << "oracle mismatch\n";
       return 1;
+    }
+    for (size_t j = 0; j < r.events.size(); ++j) {
+      const auto &a = r.events[j], &b = expected.events[j];
+      if (a.type != b.type || a.symbol != b.symbol || a.order_id != b.order_id ||
+          a.contra_id != b.contra_id || a.price != b.price || a.qty != b.qty) {
+        std::cerr << "oracle event mismatch\n";
+        return 1;
+      }
     }
     events += r.events.size();
     rejected += !r.accepted;

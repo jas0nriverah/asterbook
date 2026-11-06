@@ -1,6 +1,7 @@
 #include "asterbook/engine.hpp"
 #include <cassert>
 #include <limits>
+#include <stdexcept>
 using namespace asterbook;
 Command order(std::string id, std::string req, Side side, int price, int qty,
               std::string owner = "a", std::string sym = "X") {
@@ -119,6 +120,27 @@ int main() {
     c.id = "q\"z";
     assert(e.execute(c).accepted);
     assert(e.state().find("q\\\"z") != std::string::npos);
+  }
+  {
+    Engine source;
+    assert(source.execute(order("bid", "1", Side::Buy, 10, 1)).accepted);
+    assert(source.execute(order("ask", "2", Side::Sell, 20, 1)).accepted);
+    auto checkpoint = source.checkpoint();
+    // The order record contains length-prefixed id, owner and symbol, followed by side and price.
+    auto pos = checkpoint.find(std::string("ask") + std::string("\1\0\0\0\0\0\0\0", 8) + "a");
+    assert(pos != std::string::npos);
+    pos += 3 + 8 + 1 + 8 + 1 + 8;
+    assert(static_cast<unsigned char>(checkpoint[pos]) == 20);
+    checkpoint[pos] = 5;
+    Engine target;
+    auto before = target.checkpoint();
+    bool rejected = false;
+    try {
+      target.restore(checkpoint);
+    } catch (const std::runtime_error &) {
+      rejected = true;
+    }
+    assert(rejected && target.checkpoint() == before);
   }
   {
     Engine baseline(EngineOptions{100, 10000, AllocatorMode::Baseline});

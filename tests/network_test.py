@@ -56,6 +56,13 @@ with tempfile.TemporaryDirectory() as d:
         s.sendall(frame("V1 NEW c r2 XYZ b BUY IOC 100 3") + frame("V1 STATE"))
         assert read(s)["accepted"]
         assert isinstance(read(s), dict)
+        # Frames already in the gateway input buffer must not each wait for the
+        # poll timeout after the preceding response is sent.
+        s.sendall(frame("V1 METRICS") * 80)
+        started = time.monotonic()
+        for _ in range(80):
+            assert "queue_depth" in read(s)
+        assert time.monotonic() - started < 3.0
         assert not request(s, "V1 NEW bad")["ok"]
         retry = request(s, "V1 NEW c r1 XYZ a SELL GTC 100 5")
         assert retry["duplicate"] and retry["sequence"] == first["sequence"]

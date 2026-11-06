@@ -10,7 +10,7 @@ Install a C++20 compiler and Python 3. On macOS install Apple command line tools
 ./scripts/setup.sh
 ```
 
-The script builds the release preset, runs tests and a disposable mutual-TLS demonstration. If CMake or Ninja is unavailable it installs pinned versions in `.venv` using pip and network access; it never uses sudo. If OpenSSL cannot be discovered, setup builds pinned OpenSSL 3.5.8 in `.deps/` using curl, Perl and make (network required). On macOS, double-click `Install.command` to run the same setup in Terminal. Existing suitable CMake and Ninja installations are used. If a system CMake is too old, install 3.20 or later or add the local `.venv/bin` to `PATH`.
+The script builds the release preset, runs tests and a disposable mutual-TLS demonstration. If CMake or Ninja is unavailable it installs pinned versions in `.venv` using pip and network access; it never uses sudo. If OpenSSL cannot be discovered, setup builds pinned OpenSSL 3.5.8 in `.deps/` using curl, Perl and make (network required). On macOS, double-click `Install.command` to run the same setup in Terminal. Existing suitable CMake and Ninja installations are used. If a system CMake is too old, install 3.24 or later or add the local `.venv/bin` to `PATH`.
 
 After setup, use `.venv/bin/cmake` and `.venv/bin/ctest` if CMake was installed locally, or your system `cmake` and `ctest`. Start a server in a separate terminal:
 
@@ -18,6 +18,17 @@ After setup, use `.venv/bin/cmake` and `.venv/bin/ctest` if CMake was installed 
 build/release/asterbook server --insecure-local --data-dir ./asterbook-data --port 9000
 python3 tools/client.py --insecure-local --port 9000 'NEW alice r1 ABC a SELL GTC 100 5' 'NEW bob r2 ABC b BUY IOC 100 3' 'STATE'
 ```
+
+A readable recovery trace (use a fresh data directory):
+
+```sh
+# Start the server above, then send these in order:
+python3 tools/client.py --insecure-local --port 9000 'NEW alice r1 ABC a SELL GTC 100 5' 'NEW alice r2 ABC b SELL GTC 100 4' 'NEW bob r3 ABC c BUY IOC 100 7' 'STATE'
+# Stop and restart the server with the same --data-dir, then:
+python3 tools/client.py --insecure-local --port 9000 'STATE' 'NEW bob r3 ABC c BUY IOC 100 7'
+```
+
+The buy fills five from `a` and two from `b`; the remaining book has two units of `b`. After restart, state is the same and the identical retry returns the prior result marked duplicate. The separate [`recovery_fault_test`](tests/recovery_fault_test.cpp) exercises injected process failures; this manual trace does not simulate power loss.
 
 Prices are integer ticks and quantities are integer units chosen by the simulation; no currency or tick conversion is implied. See [protocol](docs/protocol.md) for framing, commands, identity and errors, [architecture and recovery](docs/architecture.md) for ownership and durability, [operations](docs/operations.md) for limits and deployment boundaries, [benchmarking](docs/benchmarking.md) for measurement, [ITCH](docs/itch.md) for the independent offline reconstructor, and [architectural decisions](docs/decisions/README.md) for the design tradeoffs.
 

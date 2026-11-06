@@ -49,11 +49,11 @@ std::string peer_identity(SSL *ssl) {
   X509 *cert = SSL_get1_peer_certificate(ssl);
   if (!cert)
     return {};
-  X509_NAME *subject = X509_get_subject_name(cert);
+  const X509_NAME *subject = X509_get_subject_name(cert);
   int idx = X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
   std::string identity;
   if (idx >= 0 && X509_NAME_get_index_by_NID(subject, NID_commonName, idx) < 0) {
-    ASN1_STRING *s = X509_NAME_ENTRY_get_data(X509_NAME_get_entry(subject, idx));
+    const ASN1_STRING *s = X509_NAME_ENTRY_get_data(X509_NAME_get_entry(subject, idx));
     unsigned char *utf8 = nullptr;
     int n = ASN1_STRING_to_UTF8(&utf8, s);
     if (n > 0)

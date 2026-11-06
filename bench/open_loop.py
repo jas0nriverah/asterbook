@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Scheduled synthetic arrivals; records schedule-to-response and generator lag."""
-import argparse, concurrent.futures, ipaddress, json, os, platform, random, socket, ssl, subprocess, sys, threading, time, uuid
+import argparse, concurrent.futures, ipaddress, json, math, os, platform, random, socket, ssl, subprocess, sys, threading, time, uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 from client import request
@@ -12,6 +12,21 @@ def percentile(values, q):
         return None
     values = sorted(values)
     return values[int(q * (len(values) - 1))]
+
+
+def arrival_offset_ns(i, rate, burst_size):
+    return int((i // burst_size) * burst_size * 1e9 / rate)
+
+
+def choose_symbols(count, symbol_count, hot_percent, randomizer):
+    return [
+        (
+            0
+            if randomizer.randrange(100) < hot_percent
+            else randomizer.randrange(symbol_count)
+        )
+        for _ in range(count)
+    ]
 
 
 def main():
@@ -31,6 +46,16 @@ def main():
         "--workload", choices=["add", "cancel", "cross", "deep"], default="add"
     )
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--burst-size", type=int, default=1, help="arrivals per scheduled burst"
+    )
+    p.add_argument("--symbols", type=int, default=1, help="number of synthetic symbols")
+    p.add_argument(
+        "--hot-symbol-percent",
+        type=int,
+        default=0,
+        help="percentage directed to symbol S0; remaining traffic is uniform",
+    )
     p.add_argument(
         "--namespace", default=None, help="unique run namespace; default random UUID"
     )
@@ -56,10 +81,20 @@ def main():
         or len(namespace) + 1 + len(str(a.count)) > 64
     ):
         p.error("namespace must be ASCII alphanumeric and fit 64-byte order IDs")
+    if (
+        not math.isfinite(a.rate)
+        or min(a.rate, a.count, a.workers, a.max_inflight) <= 0
+    ):
+        p.error(
+            "rate must be finite and rate, count, workers, and max-inflight must be positive"
+        )
+    if a.burst_size < 1 or a.symbols < 1 or not 0 <= a.hot_symbol_percent <= 100:
+        p.error(
+            "burst-size and symbols must be positive; hot-symbol-percent must be 0..100"
+        )
     randomizer = random.Random(a.seed)
     prices = [100 + randomizer.randrange(1000) for _ in range(a.count)]
-    if min(a.rate, a.count, a.workers, a.max_inflight) <= 0:
-        p.error("rate, count, workers, and max-inflight must be positive")
+    symbols = choose_symbols(a.count, a.symbols, a.hot_symbol_percent, randomizer)
     # One connection per thread avoids interleaving frames and permits bounded concurrency.
     local = threading.local()
     sockets = []
@@ -82,13 +117,14 @@ def main():
                 else (prices[i] if a.workload == "deep" else 100)
             )
             # Churn uses each worker's own add then cancel; RTT covers both requests.
-            cmd = f"V1 NEW {a.principal} {namespace}r{i} S {namespace}o{i} {side} GTC {price} 1"
+            symbol = f"S{symbols[i]}"
+            cmd = f"V1 NEW {a.principal} {namespace}r{i} {symbol} {namespace}o{i} {side} GTC {price} 1"
             response = request(local.sock, cmd)
             response = response.get("result", response)
             if a.workload == "cancel" and response.get("accepted"):
                 response = request(
                     local.sock,
-                    f"V1 CANCEL {a.principal} {namespace}c{i} S {namespace}o{i}",
+                    f"V1 CANCEL {a.principal} {namespace}c{i} {symbol} {namespace}o{i}",
                 )
                 response = response.get("result", response)
             return (
@@ -97,10 +133,14 @@ def main():
                 time.monotonic_ns(),
                 response.get("accepted", False),
                 None,
-                response.get("code"),
+                response.get("code", response.get("error")),
                 response.get("duplicate", False),
             )
         except (OSError, EOFError, ValueError) as exc:
+            # A partial request or response makes this stream unsafe to reuse.
+            if hasattr(local, "sock"):
+                local.sock.close()
+                del local.sock
             return (
                 scheduled,
                 submitted,
@@ -117,7 +157,7 @@ def main():
     dropped = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as pool:
         for i in range(a.count):
-            scheduled = start + int(i * 1e9 / a.rate)
+            scheduled = start + arrival_offset_ns(i, a.rate, a.burst_size)
             delay = (scheduled - time.monotonic_ns()) / 1e9
             if delay > 0:
                 time.sleep(delay)
@@ -197,6 +237,9 @@ def main():
         "namespace": namespace,
         "errors_sample": errors[:5],
         "seed": a.seed,
+        "burst_size": a.burst_size,
+        "symbol_count": a.symbols,
+        "hot_symbol_percent": a.hot_symbol_percent,
         "workers": a.workers,
         "max_inflight": a.max_inflight,
         "platform": platform.platform(),

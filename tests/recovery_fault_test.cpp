@@ -50,23 +50,28 @@ int main() {
   }
   for (const char *stage : {"throw_append", "throw_sync"}) {
     auto path = (dir / stage).string();
-    DurableEngine e(path);
-    setenv("ASTERBOOK_TEST_FAULT", stage, 1);
-    bool failed = false;
-    try {
-      e.execute(command());
-    } catch (...) {
-      failed = true;
+    {
+      DurableEngine e(path);
+      setenv("ASTERBOOK_TEST_FAULT", stage, 1);
+      bool failed = false;
+      try {
+        e.execute(command());
+      } catch (...) {
+        failed = true;
+      }
+      unsetenv("ASTERBOOK_TEST_FAULT");
+      assert(failed);
+      failed = false;
+      try {
+        e.execute(command());
+      } catch (...) {
+        failed = true;
+      }
+      assert(failed);
     }
-    unsetenv("ASTERBOOK_TEST_FAULT");
-    assert(failed);
-    failed = false;
-    try {
-      e.execute(command());
-    } catch (...) {
-      failed = true;
-    }
-    assert(failed);
+    DurableEngine reopened(path);
+    auto result = reopened.execute(command());
+    assert(result.accepted && result.duplicate == (std::string(stage) == "throw_sync"));
   }
   std::filesystem::remove_all(dir);
 }

@@ -15,3 +15,13 @@ For TLS runs pass `--ca`, `--cert`, `--key`, and `--principal` matching the clie
 `durable_bench 1000 BATCH_SIZE` uses a fresh temporary WAL and an identical prebuilt command stream, checks the resulting state against an in-memory oracle and after reopening, and reports observed successful record syncs. `bench/results/durable-local.jsonl` captures one local run for batch sizes 1, 8 and 32; timing includes WAL writes, sync, and application but excludes command generation and oracle verification. This measures throughput for preassembled batches, not network latency or time spent waiting to form a batch.
 
 Service METRICS exposes 32 logarithmic nanosecond buckets for queue wait and service time. Bucket 0 covers 0–1 ns, bucket i covers 2^i through 2^(i+1)-1 ns, and the final bucket includes all larger values. Each processed work item contributes once; a command in a group observes the shared processing interval, including WAL sync. Counters reset on process restart and snapshots can observe concurrent updates.
+
+For burst experiments, `--burst-size N` schedules N arrivals at the same instant, with bursts spaced to preserve the requested average rate. `--symbols N --hot-symbol-percent P` selects P percent of arrivals for S0 and distributes the remainder uniformly across all N symbols; use P=0 for uniform selection and P=100 for a single hot symbol. Symbol routing depends on the server shard hash, so inspect the per-shard metrics before calling a run balanced or skewed. These flags provide workload controls, not a completed comparative study. First requests include connection establishment and, where enabled, TLS handshake; the harness has no warmup.
+
+For repeated local experiments, start a fresh disposable server/data directory per run and capture each JSON output separately, for example:
+
+```sh
+for run in 1 2 3 4 5; do build/release/core_bench 10000 cross baseline > "core-$run.json"; done
+```
+
+Repeat each allocator/workload combination in varied order. Record compiler and flags, CPU, memory, OS, affinity, power settings and load alongside the raw outputs; the core output does not capture these. Profile the optimized binary on the target system (for example Linux `perf record -- build/release/core_bench 100000 cross baseline`, then `perf report`), documenting access restrictions and sampling settings. No checked-in profile establishes a bottleneck.

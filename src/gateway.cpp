@@ -391,7 +391,18 @@ int run_gateway(const GatewayOptions &opt) {
     }
     std::vector<pollfd> pf{{listener, POLLIN, 0}, {wake[0], POLLIN, 0}};
     std::vector<uint64_t> ids;
+    bool buffered_work = false;
     for (auto &[id, c] : clients) {
+      if (!c.handshake && !c.inflight && c.output.empty()) {
+        if (c.input.size() >= 4) {
+          auto *p = reinterpret_cast<const unsigned char *>(c.input.data());
+          uint32_t len = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) |
+                         uint32_t(p[3]);
+          buffered_work |= len == 0 || len > MAX_FRAME || c.input.size() >= size_t(len) + 4;
+        }
+        if (c.ssl && c.tls_wait != POLLOUT && SSL_pending(c.ssl.get()) > 0)
+          buffered_work = true;
+      }
       short events = 0;
       if (c.ssl && (c.handshake || c.tls_wait))
         events |= c.tls_wait;
@@ -404,7 +415,7 @@ int run_gateway(const GatewayOptions &opt) {
       pf.push_back({c.fd, events, 0});
       ids.push_back(id);
     }
-    int n = poll(pf.data(), pf.size(), 50);
+    int n = poll(pf.data(), pf.size(), buffered_work ? 0 : 50);
     if (n < 0) {
       if (errno == EINTR)
         continue;

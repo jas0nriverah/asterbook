@@ -261,6 +261,8 @@ void Engine::restore(const std::string &s) {
       throw std::runtime_error("invalid checkpoint order");
     next.book_.add(o);
   }
+  if (!next.book_.validate())
+    throw std::runtime_error("invalid checkpoint book");
   n = number(s, p);
   if (n > max_history_ || n != next.sequence_)
     throw std::runtime_error("invalid checkpoint requests");
