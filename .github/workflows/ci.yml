@@ -1,11 +1,15 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
 jobs:
   checks:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-26.04, macos-latest]
         preset: [release, asan, tsan]
     runs-on: ${{ matrix.os }}
     steps:
@@ -25,12 +29,19 @@ jobs:
       - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --preset ${{ matrix.preset }}
+      - name: Secure demo
+        if: runner.os == 'Linux' && matrix.preset == 'release'
+        run: ./scripts/secure-demo.sh "$PWD/build/release/asterbook"
+      - name: Expanded differential verification
+        if: runner.os == 'Linux' && matrix.preset == 'release'
+        run: python3 reference/differential.py --server build/release/asterbook --seeds 100 --count 1000
   fuzz:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build clang libssl-dev
       - run: cmake -S . -B build/fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DASTERBOOK_FUZZ=ON -DBUILD_TESTING=OFF
       - run: cmake --build build/fuzz --target parser_fuzz itch_fuzz
-      - run: build/fuzz/parser_fuzz -runs=10000
-      - run: build/fuzz/itch_fuzz -runs=10000
+      - run: ./scripts/fuzz-seeds.sh build/fuzz/corpus
+      - run: build/fuzz/parser_fuzz build/fuzz/corpus/parser-corpus -runs=100000 -max_len=8192
+      - run: build/fuzz/itch_fuzz build/fuzz/corpus/itch-corpus -runs=100000 -max_len=512

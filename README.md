@@ -48,3 +48,5 @@ Run `./scripts/secure-demo.sh` to repeat the disposable certificate, mutual TLS,
 | Pool/layout optimization | Optional PMR pooled allocation; benchmark on the intended workload before choosing it. |
 
 No auctions, hidden orders, margin, settlement, trading controls, or live market access are implemented. Self-trading is not prevented. [MIT license](LICENSE).
+
+For Ubuntu setup and verification commands, see [Linux verification](docs/linux-verification.md).
