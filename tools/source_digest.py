@@ -4,7 +4,15 @@ import hashlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXCLUDED_DIRS = {".git", ".venv", "build", "__pycache__", "results", "asterbook-data"}
+EXCLUDED_DIRS = {
+    ".git",
+    ".venv",
+    ".deps",
+    "build",
+    "__pycache__",
+    "results",
+    "asterbook-data",
+}
 EXCLUDED_FILES = {".DS_Store", "differential-repro.txt"}
 
 

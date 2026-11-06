@@ -8,7 +8,5 @@ for preset in release asan tsan; do
   ctest --preset "$preset"
 done
 if [[ "${ASTERBOOK_RUN_FUZZ:-0}" == 1 ]]; then
-  cmake -S . -B build/fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DASTERBOOK_FUZZ=ON -DBUILD_TESTING=OFF
-  cmake --build build/fuzz --target parser_fuzz
-  build/fuzz/parser_fuzz -runs=10000
+  ./scripts/fuzz-local.sh
 fi

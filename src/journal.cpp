@@ -1,4 +1,5 @@
 #include "asterbook/journal.hpp"
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -116,28 +117,66 @@ std::string readall(int fd) {
   }
   return data;
 }
-void replay(Engine &e, const std::string &data) {
+std::string read_at(int fd, std::uint64_t offset, std::size_t size) {
+  std::string data(size, '\0');
   std::size_t pos = 0;
-  while (pos < data.size()) {
-    if (data.size() - pos < 12)
+  while (pos < size) {
+    auto n = pread(fd, &data[pos], size - pos, offset + pos);
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0)
+      throw std::runtime_error("truncated WAL");
+    pos += n;
+  }
+  return data;
+}
+std::uint64_t file_size(int fd) {
+  struct stat st{};
+  if (fstat(fd, &st) || st.st_size < 0)
+    throw std::runtime_error("WAL stat failed");
+  return static_cast<std::uint64_t>(st.st_size);
+}
+std::uint32_t prefix_checksum(int fd, std::uint64_t size) {
+  std::uint32_t h = 2166136261u;
+  for (std::uint64_t pos = 0; pos < size;) {
+    auto data =
+        read_at(fd, pos, static_cast<std::size_t>(std::min<std::uint64_t>(65536, size - pos)));
+    for (unsigned char c : data) {
+      h ^= c;
+      h *= 16777619u;
+    }
+    pos += data.size();
+  }
+  return h;
+}
+std::uint64_t scan(int fd, std::uint64_t pos, std::uint64_t end, std::uint64_t ordinal,
+                   Engine *engine) {
+  while (pos < end) {
+    if (end - pos < 12)
       throw std::runtime_error("truncated WAL header");
-    auto m = get32(data, pos), n = get32(data, pos), sum = get32(data, pos);
+    auto header = read_at(fd, pos, 12);
+    pos += 12;
+    std::size_t p = 0;
+    auto m = get32(header, p), n = get32(header, p), sum = get32(header, p);
     if (m != magic || n > limit)
       throw std::runtime_error("invalid WAL header");
-    if (n > data.size() - pos)
+    if (n > end - pos)
       throw std::runtime_error("truncated WAL record");
-    auto p = data.substr(pos, n);
+    auto payload = read_at(fd, pos, n);
     pos += n;
-    if (checksum(p) != sum)
+    if (checksum(payload) != sum)
       throw std::runtime_error("WAL checksum mismatch");
-    std::size_t pp = 0;
-    auto ordinal = get64(p, pp);
-    if (ordinal != e.sequence() + 1)
+    p = 0;
+    if (get64(payload, p) != ++ordinal)
       throw std::runtime_error("WAL ordinal mismatch");
-    auto r = e.execute(decode(p.substr(pp)));
-    if (r.duplicate || r.code == "HISTORY_CAPACITY" || r.code == "REQUEST_CONFLICT")
-      throw std::runtime_error("invalid WAL history or configured capacity");
+    auto command = decode(payload.substr(p));
+    if (engine) {
+      auto r = engine->execute(command);
+      if (r.duplicate || r.code == "HISTORY_CAPACITY" || r.code == "REQUEST_CONFLICT")
+        throw std::runtime_error("invalid WAL history or configured capacity");
+    }
   }
+  return ordinal;
 }
 void writeall(int fd, const std::string &data) {
   std::size_t pos = 0;
@@ -150,10 +189,10 @@ void writeall(int fd, const std::string &data) {
     pos += n;
   }
 }
-}
+} // namespace
 DurableEngine::DurableEngine(const std::string &path, std::size_t live, std::size_t history,
-                             const std::string &snap)
-    : path_(path), engine_(live, history) {
+                             const std::string &snap, AllocatorMode allocator)
+    : path_(path), engine_(EngineOptions{live, history, allocator}) {
   bool created = false;
   fd_ = ::open(path.c_str(), O_RDWR | O_APPEND | (snap.empty() ? (O_CREAT | O_EXCL) : 0), 0600);
   if (fd_ >= 0)
@@ -165,8 +204,8 @@ DurableEngine::DurableEngine(const std::string &path, std::size_t live, std::siz
   try {
     if (flock(fd_, LOCK_EX | LOCK_NB))
       throw std::runtime_error("WAL already locked");
-    auto data = readall(fd_);
-    if (data.empty()) {
+    auto size = file_size(fd_);
+    if (size == 0) {
       if (!created)
         throw std::runtime_error("empty existing WAL");
       std::string header;
@@ -176,11 +215,14 @@ DurableEngine::DurableEngine(const std::string &path, std::size_t live, std::siz
       writeall(fd_, header);
       if (fsync(fd_))
         throw std::runtime_error("WAL header sync failed");
-      data = header;
+      size = header.size();
     }
+    if (size < 20)
+      throw std::runtime_error("WAL version or capacity mismatch");
+    auto header = read_at(fd_, 0, 20);
     std::size_t hp = 0;
-    if (data.size() < 20 || get32(data, hp) != 0x31484241 || get64(data, hp) != live ||
-        get64(data, hp) != history)
+    if (get32(header, hp) != 0x31484241 || get64(header, hp) != live ||
+        get64(header, hp) != history)
       throw std::runtime_error("WAL version or capacity mismatch");
     if (!snap.empty()) {
       int f = ::open(snap.c_str(), O_RDONLY);
@@ -198,36 +240,20 @@ DurableEngine::DurableEngine(const std::string &path, std::size_t live, std::siz
       if (prefix.size() < 20 || get32(prefix, sp) != 0x31534241)
         throw std::runtime_error("invalid snapshot header");
       auto offset = get64(prefix, sp);
-      auto wal_sum = get32(prefix, sp);
-      auto state_sum = get32(prefix, sp);
-      if (offset < 20 || offset > data.size() || checksum(data.substr(0, offset)) != wal_sum)
+      auto wal_sum = get32(prefix, sp), state_sum = get32(prefix, sp);
+      if (offset < 20 || offset > size || prefix_checksum(fd_, offset) != wal_sum)
         throw std::runtime_error("snapshot WAL prefix mismatch");
       auto checkpoint = prefix.substr(sp);
       if (checksum(checkpoint) != state_sum)
         throw std::runtime_error("snapshot checksum mismatch");
-      std::size_t check = 20;
-      std::uint64_t ordinal = 0;
-      while (check < offset) {
-        if (offset - check < 12 || get32(data, check) != magic)
-          throw std::runtime_error("invalid WAL prefix header");
-        auto n = get32(data, check), sum = get32(data, check);
-        if (n > limit || n > offset - check)
-          throw std::runtime_error("invalid WAL prefix record");
-        auto payload = data.substr(check, n);
-        check += n;
-        if (checksum(payload) != sum)
-          throw std::runtime_error("WAL prefix checksum mismatch");
-        std::size_t q = 0;
-        if (get64(payload, q) != ++ordinal)
-          throw std::runtime_error("WAL prefix ordinal mismatch");
-        decode(payload.substr(q));
-      }
+      auto ordinal = scan(fd_, 20, offset, 0, nullptr);
       engine_.restore(checkpoint);
       if (engine_.sequence() != ordinal)
         throw std::runtime_error("snapshot sequence mismatch");
-      replay(engine_, data.substr(offset));
-    } else
-      replay(engine_, data.substr(20));
+      scan(fd_, offset, size, ordinal, &engine_);
+    } else {
+      scan(fd_, 20, size, 0, &engine_);
+    }
     // Persist the directory entry before acknowledging records.
     auto dir = std::filesystem::path(path).parent_path();
     if (dir.empty())
@@ -249,38 +275,56 @@ DurableEngine::~DurableEngine() {
   if (fd_ >= 0)
     ::close(fd_);
 }
-Result DurableEngine::execute(const Command &c) {
+Result DurableEngine::execute(const Command &c) { return execute_batch({c}).front(); }
+std::vector<Result> DurableEngine::execute_batch(const std::vector<Command> &commands) {
   if (poisoned_)
     throw std::runtime_error("WAL unavailable");
-  if (auto result = engine_.precheck(c))
-    return *result;
-  std::string p;
-  put64(p, engine_.sequence() + 1);
-  p += encode(c);
-  if (p.size() > limit)
-    throw std::runtime_error("command too large for WAL");
-  std::string record;
-  put32(record, magic);
-  put32(record, (std::uint32_t)p.size());
-  put32(record, checksum(p));
-  record += p;
-  // A command is acknowledged only after its WAL record is synced and applied.
+  if (commands.empty())
+    return {};
+  // Track only new request keys. Existing results remain in the engine until sync.
+  std::map<std::pair<std::string, std::string>, std::string> pending;
+  std::string records;
+  for (const auto &c : commands) {
+    if (engine_.precheck(c))
+      continue;
+    auto key = std::make_pair(c.client, c.request);
+    if (pending.count(key))
+      continue;
+    if (pending.size() >= engine_.history_capacity() - engine_.sequence())
+      continue;
+    std::string payload;
+    put64(payload, engine_.sequence() + pending.size() + 1);
+    payload += encode(c);
+    if (payload.size() > limit)
+      throw std::runtime_error("command too large for WAL");
+    put32(records, magic);
+    put32(records, (std::uint32_t)payload.size());
+    put32(records, checksum(payload));
+    records += payload;
+    pending.emplace(std::move(key), canonical_command(c));
+  }
+  if (pending.empty()) {
+    std::vector<Result> results;
+    results.reserve(commands.size());
+    for (const auto &c : commands)
+      results.push_back(*engine_.precheck(c));
+    return results;
+  }
   try {
     fault("throw_append");
-    writeall(fd_, record);
+    writeall(fd_, records);
     fault("after_append");
     fault("throw_sync");
     if (fsync(fd_))
       throw std::runtime_error("WAL sync failed");
+    ++sync_count_;
     fault("after_sync");
-  } catch (...) {
-    poisoned_ = true;
-    throw;
-  }
-  try {
-    auto result = engine_.execute(c);
+    std::vector<Result> results;
+    results.reserve(commands.size());
+    for (const auto &c : commands)
+      results.push_back(engine_.execute(c));
     fault("after_apply");
-    return result;
+    return results;
   } catch (...) {
     poisoned_ = true;
     throw;
@@ -293,12 +337,12 @@ void DurableEngine::snapshot(const std::string &path) const {
       (std::filesystem::exists(path) && std::filesystem::equivalent(path, path_)))
     throw std::runtime_error("snapshot cannot replace WAL");
   // The checkpoint is tied to an exact WAL prefix; the full WAL remains retained.
-  auto wal = readall(fd_);
+  auto wal_size = file_size(fd_);
   auto checkpoint = engine_.checkpoint();
   std::string data;
   put32(data, 0x31534241);
-  put64(data, wal.size());
-  put32(data, checksum(wal));
+  put64(data, wal_size);
+  put32(data, prefix_checksum(fd_, wal_size));
   put32(data, checksum(checkpoint));
   data += checkpoint;
   std::string tmp = path + ".tmp.XXXXXX";
@@ -335,4 +379,4 @@ void DurableEngine::snapshot(const std::string &path) const {
     throw;
   }
 }
-}
+} // namespace asterbook

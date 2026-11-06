@@ -1,7 +1,3 @@
-# 8. Trust boundary
+# 8. Transport security
 
-**Context.** The simulator accepts commands and administrative operations over TCP but has no identity infrastructure.
-
-**Decision.** Bind to IPv4 loopback by default; non-loopback binding requires an explicit unsafe flag. There is no authentication, authorization, TLS or tenant isolation. A command's client field only enforces book ownership under a trusted-client assumption. See [gateway](../../src/gateway.cpp) and [operations](../operations.md).
-
-**Alternatives and consequences.** A public listener without transport security and authenticated principals would expose order mutation and checkpoints to anyone who can connect. The override is for controlled environments; it does not add protection. This is not a security or exchange certification.
+The gateway requires mutual TLS and an explicit admin allowlist by default. A verified client certificate's single common name is the command client identity; administrative commands additionally require membership in the policy file. TLS handshakes use nonblocking I/O and an absolute deadline. `--insecure-local` is an explicit, loopback-only development mode without authentication. See [security](../security.md) for configuration and limitations.

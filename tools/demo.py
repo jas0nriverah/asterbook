@@ -12,7 +12,7 @@ from client import request
 
 def start(binary, data, port):
     process = subprocess.Popen(
-        [binary, "server", "--data-dir", data, "--port", str(port)],
+        [binary, "server", "--insecure-local", "--data-dir", data, "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )

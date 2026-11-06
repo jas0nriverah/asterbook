@@ -2,6 +2,7 @@
 #include "asterbook/protocol.hpp"
 #include "asterbook/journal.hpp"
 #include "asterbook/queue.hpp"
+#include "asterbook/tls.hpp"
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <filesystem>
@@ -14,6 +15,7 @@
 #include <stdexcept>
 #include <unistd.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cerrno>
@@ -46,6 +48,12 @@ struct Completion {
 struct Client {
   int fd;
   uint64_t id;
+  std::shared_ptr<SSL> ssl;
+  bool handshake = false;
+  short tls_wait = POLLIN;
+  std::string principal;
+  char read_buffer[4096];
+  Clock::time_point connected = Clock::now();
   std::string input, output;
   size_t offset = 0;
   bool inflight = false;
@@ -123,8 +131,23 @@ int run_gateway(const GatewayOptions &opt) {
     std::cerr << "invalid IPv4 bind address\n";
     return 1;
   }
-  if ((ntohl(addr.s_addr) >> 24) != 127 && !opt.unsafe_non_loopback) {
-    std::cerr << "non-loopback bind requires --unsafe-non-loopback\n";
+  bool loopback = (ntohl(addr.s_addr) >> 24) == 127;
+  TlsContext tls;
+  std::set<std::string> admins;
+  try {
+    if (opt.insecure_local) {
+      if (!loopback || !opt.tls_cert.empty() || !opt.tls_key.empty() || !opt.tls_ca.empty() ||
+          !opt.admin_policy.empty())
+        throw std::runtime_error("--insecure-local requires loopback and no TLS options");
+    } else {
+      if (opt.tls_cert.empty() || opt.tls_key.empty() || opt.tls_ca.empty() ||
+          opt.admin_policy.empty())
+        throw std::runtime_error("TLS certificate, key, client CA and admin policy are required");
+      tls = make_tls_context(opt.tls_cert, opt.tls_key, opt.tls_ca);
+      admins = load_admins(opt.admin_policy);
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "security configuration: " << e.what() << "\n";
     return 1;
   }
   int listener = socket(AF_INET, SOCK_STREAM, 0);
@@ -169,7 +192,18 @@ int run_gateway(const GatewayOptions &opt) {
   std::mutex cm;
   std::vector<Completion> completions;
   std::atomic<bool> fatal = false;
-  std::atomic<uint64_t> processed = 0;
+  std::atomic<uint64_t> processed = 0, batches = 0, wal_syncs = 0;
+  std::array<std::atomic<uint64_t>, 32> queue_hist{}, service_hist{};
+  auto observe = [](auto &hist, Clock::duration duration) {
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+    std::uint64_t n = ns > 0 ? static_cast<std::uint64_t>(ns) : 0;
+    std::size_t bucket = 0;
+    while (n > 1 && bucket + 1 < hist.size()) {
+      n >>= 1;
+      ++bucket;
+    }
+    ++hist[bucket];
+  };
   std::vector<std::unique_ptr<BoundedQueue<Work>>> queues;
   std::vector<std::thread> workers;
   int lockfd = -1;
@@ -210,9 +244,9 @@ int run_gateway(const GatewayOptions &opt) {
         throw std::runtime_error("missing shard journal");
       auto snap = base + "/snapshot";
       snapshots.push_back(snap);
-      engines.push_back(std::make_unique<DurableEngine>(base + "/journal", opt.max_live,
-                                                        opt.max_history,
-                                                        std::filesystem::exists(snap) ? snap : ""));
+      engines.push_back(std::make_unique<DurableEngine>(
+          base + "/journal", opt.max_live, opt.max_history,
+          std::filesystem::exists(snap) ? snap : "", opt.allocator));
       queues.push_back(std::make_unique<BoundedQueue<Work>>(opt.queue_capacity));
     }
     for (size_t i = 0; i < opt.shards; ++i)
@@ -220,30 +254,60 @@ int run_gateway(const GatewayOptions &opt) {
         Work w;
         while (!fatal && queues[i]->pop(w)) {
           try {
-            std::string result;
-            if (w.request.kind == RequestKind::State)
-              result = engine->state();
-            else if (w.request.kind == RequestKind::Checkpoint) {
+            std::vector<Work> work;
+            work.push_back(std::move(w));
+            if (work.front().request.kind == RequestKind::Command) {
+              Work next;
+              while (work.size() < opt.batch_size &&
+                     queues[i]->try_pop_if(next, [](const Work &item) {
+                       return item.request.kind == RequestKind::Command;
+                     }))
+                work.push_back(std::move(next));
+            }
+            auto service_start = Clock::now();
+            for (const auto &item : work)
+              observe(queue_hist, service_start - item.admitted);
+            std::vector<std::string> outputs(work.size());
+            if (work.front().request.kind == RequestKind::State)
+              outputs[0] = engine->state();
+            else if (work.front().request.kind == RequestKind::Checkpoint) {
               engine->snapshot(snap);
-              result = "{\"ok\":true}";
+              outputs[0] = "{\"ok\":true}";
             } else {
-              if (Clock::now() - w.admitted > std::chrono::milliseconds(opt.queue_timeout_ms))
-                result = error_json("DEADLINE_EXCEEDED");
-              else
-                result = result_json(engine->execute(w.request.command));
+              std::vector<Command> commands;
+              std::vector<std::size_t> positions;
+              auto now = Clock::now();
+              for (std::size_t j = 0; j < work.size(); ++j) {
+                if (now - work[j].admitted > std::chrono::milliseconds(opt.queue_timeout_ms))
+                  outputs[j] = error_json("DEADLINE_EXCEEDED");
+                else {
+                  positions.push_back(j);
+                  commands.push_back(work[j].request.command);
+                }
+              }
+              auto before_sync = engine->sync_count();
+              auto results = engine->execute_batch(commands);
+              wal_syncs += engine->sync_count() - before_sync;
+              if (!commands.empty())
+                ++batches;
+              for (std::size_t j = 0; j < results.size(); ++j)
+                outputs[positions[j]] = result_json(results[j]);
               if (opt.shards > 1)
-                result = "{\"shard\":" + std::to_string(i) + ",\"result\":" + result + "}";
+                for (auto &output : outputs)
+                  output = "{\"shard\":" + std::to_string(i) + ",\"result\":" + output + "}";
             }
-            if (result.size() > MAX_OUTPUT - 4) {
-              if (w.request.kind == RequestKind::Command)
-                throw std::runtime_error("command response exceeded invariant");
-              result = error_json("RESPONSE_TOO_LARGE");
-            }
-            {
+            auto service_end = Clock::now();
+            for (std::size_t j = 0; j < work.size(); ++j) {
+              observe(service_hist, service_end - service_start);
+              if (outputs[j].size() > MAX_OUTPUT - 4) {
+                if (work[j].request.kind == RequestKind::Command)
+                  throw std::runtime_error("command response exceeded invariant");
+                outputs[j] = error_json("RESPONSE_TOO_LARGE");
+              }
               std::lock_guard lock(cm);
-              completions.push_back({w.id, i, std::move(result)});
+              completions.push_back({work[j].id, i, std::move(outputs[j])});
             }
-            ++processed;
+            processed += work.size();
             char b = 1;
             (void)write(wake[1], &b, 1);
           } catch (const std::exception &e) {
@@ -329,10 +393,14 @@ int run_gateway(const GatewayOptions &opt) {
     std::vector<uint64_t> ids;
     for (auto &[id, c] : clients) {
       short events = 0;
-      if (!c.inflight && c.output.empty())
-        events |= POLLIN;
-      if (!c.output.empty())
-        events |= POLLOUT;
+      if (c.ssl && (c.handshake || c.tls_wait))
+        events |= c.tls_wait;
+      else {
+        if (!c.inflight && c.output.empty())
+          events |= POLLIN;
+        if (!c.output.empty())
+          events |= POLLOUT;
+      }
       pf.push_back({c.fd, events, 0});
       ids.push_back(id);
     }
@@ -366,6 +434,16 @@ int run_gateway(const GatewayOptions &opt) {
         Client client{};
         client.fd = fd;
         client.id = id;
+        if (tls) {
+          client.ssl.reset(SSL_new(tls.get()), SSL_free);
+          if (!client.ssl || SSL_set_fd(client.ssl.get(), fd) != 1) {
+            close(fd);
+            continue;
+          }
+          SSL_set_accept_state(client.ssl.get());
+          client.handshake = true;
+        } else
+          client.tls_wait = 0;
         clients.emplace(id, std::move(client));
         ++accepted;
       }
@@ -380,32 +458,80 @@ int run_gateway(const GatewayOptions &opt) {
       short re = pf[i + 2].revents;
       if (re & (POLLERR | POLLHUP | POLLNVAL))
         drop = true;
-      if (!drop && (re & POLLOUT)) {
-        ssize_t sent = send(c.fd, c.output.data() + c.offset, c.output.size() - c.offset, 0);
+      if (!drop && c.handshake && (re & c.tls_wait)) {
+        int rc = SSL_accept(c.ssl.get());
+        if (rc == 1) {
+          c.principal = peer_identity(c.ssl.get());
+          if (c.principal.empty())
+            drop = true;
+          else {
+            c.handshake = false;
+            c.tls_wait = 0;
+            c.activity = now;
+          }
+        } else {
+          int e = SSL_get_error(c.ssl.get(), rc);
+          if (e == SSL_ERROR_WANT_READ)
+            c.tls_wait = POLLIN;
+          else if (e == SSL_ERROR_WANT_WRITE)
+            c.tls_wait = POLLOUT;
+          else
+            drop = true;
+        }
+      }
+      if (!drop && !c.handshake && !c.output.empty() &&
+          (re & (c.ssl && c.tls_wait ? c.tls_wait : POLLOUT))) {
+        int sent = c.ssl ? SSL_write(c.ssl.get(), c.output.data() + c.offset,
+                                     static_cast<int>(c.output.size() - c.offset))
+                         : static_cast<int>(send(c.fd, c.output.data() + c.offset,
+                                                 c.output.size() - c.offset, 0));
         if (sent > 0) {
+          c.tls_wait = 0;
           c.offset += static_cast<size_t>(sent);
           c.activity = now;
           if (c.offset == c.output.size()) {
             c.output.clear();
             c.offset = 0;
           }
-        } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        } else if (c.ssl) {
+          int e = SSL_get_error(c.ssl.get(), sent);
+          if (e == SSL_ERROR_WANT_READ)
+            c.tls_wait = POLLIN;
+          else if (e == SSL_ERROR_WANT_WRITE)
+            c.tls_wait = POLLOUT;
+          else
+            drop = true;
+        } else if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
           drop = true;
       }
-      if (!drop && (re & POLLIN)) {
-        char buf[4096];
-        ssize_t got = recv(c.fd, buf, sizeof(buf), 0);
-        if (got == 0)
-          drop = true;
-        else if (got < 0) {
-          if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-            drop = true;
-        } else {
+      bool buffered_frame = false;
+      if (c.input.size() >= 4) {
+        auto *header = reinterpret_cast<const unsigned char *>(c.input.data());
+        uint32_t len = (uint32_t(header[0]) << 24) | (uint32_t(header[1]) << 16) |
+                       (uint32_t(header[2]) << 8) | uint32_t(header[3]);
+        buffered_frame = len == 0 || len > MAX_FRAME || c.input.size() >= size_t(len) + 4;
+      }
+      if (!drop && !c.handshake && !c.inflight && c.output.empty() && !buffered_frame &&
+          ((re & (c.ssl && c.tls_wait ? c.tls_wait : POLLIN)) ||
+           (c.ssl && SSL_pending(c.ssl.get()) > 0))) {
+        int got = c.ssl ? SSL_read(c.ssl.get(), c.read_buffer, sizeof(c.read_buffer))
+                        : static_cast<int>(recv(c.fd, c.read_buffer, sizeof(c.read_buffer), 0));
+        if (got > 0) {
+          c.tls_wait = 0;
           if (c.input.empty())
             c.frame_start = now;
-          c.input.append(buf, static_cast<size_t>(got));
+          c.input.append(c.read_buffer, static_cast<size_t>(got));
           c.activity = now;
-        }
+        } else if (c.ssl) {
+          int e = SSL_get_error(c.ssl.get(), got);
+          if (e == SSL_ERROR_WANT_READ)
+            c.tls_wait = POLLIN;
+          else if (e == SSL_ERROR_WANT_WRITE)
+            c.tls_wait = POLLOUT;
+          else
+            drop = true;
+        } else if (got == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+          drop = true;
       }
       if (!drop && !c.inflight && c.output.empty() && c.input.size() >= 4) {
         auto *p = reinterpret_cast<const unsigned char *>(c.input.data());
@@ -432,11 +558,28 @@ int run_gateway(const GatewayOptions &opt) {
             c.output = frame(error_json(err));
           } else {
             --c.tokens;
-            if (req.kind == RequestKind::Metrics) {
+            if (c.ssl && req.kind == RequestKind::Command && req.command.client != c.principal) {
+              c.output = frame(error_json("IDENTITY_MISMATCH"));
+            } else if (c.ssl && req.kind != RequestKind::Command && !admins.count(c.principal)) {
+              c.output = frame(error_json("FORBIDDEN"));
+            } else if (req.kind == RequestKind::Metrics) {
               size_t depth = 0;
               for (auto &q : queues)
                 depth += q->size();
-              c.output = frame("{\"queue_depth\":" + std::to_string(depth) +
+              auto hist_json = [](const auto &hist) {
+                std::string out = "[";
+                for (std::size_t j = 0; j < hist.size(); ++j) {
+                  if (j)
+                    out += ",";
+                  out += std::to_string(hist[j].load());
+                }
+                return out + "]";
+              };
+              c.output = frame("{\"queue_wait_log2_ns\":" + hist_json(queue_hist) +
+                               ",\"service_log2_ns\":" + hist_json(service_hist) +
+                               ",\"batches\":" + std::to_string(batches.load()) +
+                               ",\"wal_syncs\":" + std::to_string(wal_syncs.load()) +
+                               ",\"queue_depth\":" + std::to_string(depth) +
                                ",\"accepted_connections\":" + std::to_string(accepted) +
                                ",\"processed\":" + std::to_string(processed.load()) +
                                ",\"overload\":" + std::to_string(overload) +
@@ -474,7 +617,9 @@ int run_gateway(const GatewayOptions &opt) {
           }
         }
       }
-      if (!drop && (now - c.activity > std::chrono::milliseconds(opt.idle_timeout_ms) ||
+      if (!drop && ((c.handshake &&
+                     now - c.connected > std::chrono::milliseconds(opt.handshake_timeout_ms)) ||
+                    now - c.activity > std::chrono::milliseconds(opt.idle_timeout_ms) ||
                     (!c.input.empty() &&
                      now - c.frame_start > std::chrono::milliseconds(opt.frame_timeout_ms))))
         drop = true;

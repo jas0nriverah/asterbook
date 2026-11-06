@@ -10,7 +10,9 @@ int main(int argc, char **argv) {
     std::cerr
         << "usage: asterbook server [--data-dir DIR] [--bind IPV4] [--port PORT] [--queue-capacity "
            "N] [--shards N] [--max-live N] [--max-history N] [--idle-timeout-ms N] "
-           "[--frame-timeout-ms N] [--queue-timeout-ms N] [--unsafe-non-loopback] | replay\n";
+           "[--frame-timeout-ms N] [--queue-timeout-ms N] [--batch-size N] [--allocator "
+           "baseline|pooled] [--insecure-local | --tls-cert FILE --tls-key FILE --tls-ca FILE "
+           "--admin-policy FILE] | replay\n";
     return 2;
   }
   std::string mode = argv[1];
@@ -38,8 +40,8 @@ int main(int argc, char **argv) {
   GatewayOptions o;
   for (int i = 2; i < argc; ++i) {
     std::string a = argv[i];
-    if (a == "--unsafe-non-loopback") {
-      o.unsafe_non_loopback = true;
+    if (a == "--insecure-local") {
+      o.insecure_local = true;
       continue;
     }
     if (i + 1 >= argc) {
@@ -47,18 +49,36 @@ int main(int argc, char **argv) {
       return 2;
     }
     std::string v = argv[++i];
-    if (a == "--data-dir")
+    if (a == "--allocator") {
+      if (v == "baseline")
+        o.allocator = AllocatorMode::Baseline;
+      else if (v == "pooled")
+        o.allocator = AllocatorMode::Pooled;
+      else {
+        std::cerr << "invalid allocator\n";
+        return 2;
+      }
+    } else if (a == "--tls-cert")
+      o.tls_cert = v;
+    else if (a == "--tls-key")
+      o.tls_key = v;
+    else if (a == "--tls-ca")
+      o.tls_ca = v;
+    else if (a == "--admin-policy")
+      o.admin_policy = v;
+    else if (a == "--data-dir")
       o.data_dir = v;
     else if (a == "--bind")
       o.bind = v;
     else if (a == "--port" || a == "--queue-capacity" || a == "--shards" || a == "--max-live" ||
              a == "--max-history" || a == "--idle-timeout-ms" || a == "--frame-timeout-ms" ||
-             a == "--queue-timeout-ms") {
+             a == "--queue-timeout-ms" || a == "--batch-size") {
       unsigned long n = 0;
       auto [p, e] = std::from_chars(v.data(), v.data() + v.size(), n);
       if (e != std::errc{} || p != v.data() + v.size() || n == 0 || (a == "--port" && n > 65535) ||
-          (a == "--queue-capacity" && n > 65536) || (a == "--shards" && n > 16) ||
-          (a == "--max-live" && n > 10000) || (a == "--max-history" && n > 1000000) ||
+          (a == "--batch-size" && n > 1024) || (a == "--queue-capacity" && n > 65536) ||
+          (a == "--shards" && n > 16) || (a == "--max-live" && n > 10000) ||
+          (a == "--max-history" && n > 1000000) ||
           ((a == "--idle-timeout-ms" || a == "--frame-timeout-ms" || a == "--queue-timeout-ms") &&
            n > 3600000)) {
         std::cerr << "invalid numeric option\n";
@@ -68,6 +88,8 @@ int main(int argc, char **argv) {
         o.port = static_cast<uint16_t>(n);
       else if (a == "--queue-capacity")
         o.queue_capacity = n;
+      else if (a == "--batch-size")
+        o.batch_size = n;
       else if (a == "--shards")
         o.shards = n;
       else if (a == "--max-live")

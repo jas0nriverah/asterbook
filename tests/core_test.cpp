@@ -25,6 +25,7 @@ int main() {
     auto r = e.execute(buy);
     assert(r.accepted && r.events.size() == 2 && r.events[0].contra_id == "s1" &&
            r.events[1].contra_id == "s2");
+    assert(r.events[0].qty == 4 && r.events[1].qty == 2 && e.validate());
     assert(e.execute(buy).duplicate);
     buy.qty = 7;
     assert(e.execute(buy).code == "REQUEST_CONFLICT");
@@ -56,6 +57,7 @@ int main() {
     auto r = e.execute(b);
     assert(r.events.size() == 3 && r.events[0].contra_id == "s2" && r.events[1].contra_id == "s1" &&
            r.events[2].type == "EXPIRE" && r.events[2].qty == 2);
+    assert(r.events[0].qty + r.events[1].qty + r.events[2].qty == b.qty && e.validate());
     b.id = "b2";
     b.request = "5";
     r = e.execute(b);
@@ -117,5 +119,24 @@ int main() {
     c.id = "q\"z";
     assert(e.execute(c).accepted);
     assert(e.state().find("q\\\"z") != std::string::npos);
+  }
+  {
+    Engine baseline(EngineOptions{100, 10000, AllocatorMode::Baseline});
+    Engine pooled(EngineOptions{100, 10000, AllocatorMode::Pooled});
+    for (int i = 0; i < 500; ++i) {
+      auto id = "recycle" + std::to_string(i);
+      auto add = order(id, "a" + std::to_string(i), Side::Buy, 10, 1);
+      assert(baseline.execute(add).accepted && pooled.execute(add).accepted);
+      auto cancel = add;
+      cancel.op = Op::Cancel;
+      cancel.request = "c" + std::to_string(i);
+      assert(baseline.execute(cancel).accepted && pooled.execute(cancel).accepted);
+      assert(baseline.validate() && pooled.validate());
+      if (i == 250)
+        pooled.restore(pooled.checkpoint());
+    }
+    assert(baseline.checkpoint() == pooled.checkpoint());
+    Engine moved(std::move(pooled));
+    assert(moved.checkpoint() == baseline.checkpoint());
   }
 }

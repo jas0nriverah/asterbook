@@ -1,0 +1,13 @@
+{
+  "date": "2026-11-06",
+  "hardware": "Apple M4, arm64",
+  "os": "Darwin 25.5.0",
+  "compiler": "Apple clang 21.0.0 (clang-2100.1.1.101)",
+  "compile_flags": "-O2 -std=c++17 -Iinclude",
+  "base_commit": "fa114cd334260453d46983abf05382ac647feb16",
+  "working_tree": "dirty; measured sources include uncommitted changes",
+  "source_digest_after_runs": "b34c1c34904ee4c17d24c67238d5313bc2c75a2efcfac1d5d470f6980bee1c73",
+  "core_binary_sha256": "2c2f192c9355e0982d29becd7403599a5082680de4c3b19df7a6ae5a1ca94bc2",
+  "durable_binary_sha256": "d29b2fb36fb7c66e1326d0eb889cfb5c294f88367155f315a829c98c86f72b04",
+  "limitations": "One sequential run per case on an uncontrolled machine; source digest was captured after the runs and includes documentation changes."
+}

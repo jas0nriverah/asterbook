@@ -1,4 +1,5 @@
 #pragma once
+#include "asterbook/engine.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -7,8 +8,12 @@ struct GatewayOptions {
   std::string data_dir = "asterbook-data";
   std::string bind = "127.0.0.1";
   uint16_t port = 9000;
-  bool unsafe_non_loopback = false;
+  bool insecure_local = false;
+  std::string tls_cert, tls_key, tls_ca, admin_policy;
+  size_t handshake_timeout_ms = 10000;
   size_t queue_capacity = 256;
+  size_t batch_size = 1;
+  AllocatorMode allocator = AllocatorMode::Baseline;
   size_t shards = 1;
   size_t max_live = 10000;
   size_t max_history = 1000000;

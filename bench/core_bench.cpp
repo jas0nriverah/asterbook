@@ -10,12 +10,17 @@ using Clock = std::chrono::steady_clock;
 int main(int argc, char **argv) {
   const int n = argc > 1 ? std::atoi(argv[1]) : 10000;
   const std::string workload = argc > 2 ? argv[2] : "add";
-  if (n < 1 ||
+  const std::string allocator = argc > 3 ? argv[3] : "baseline";
+  if ((allocator != "baseline" && allocator != "pooled") || n < 1 ||
       (workload != "add" && workload != "cancel" && workload != "cross" && workload != "deep")) {
-    std::cerr << "usage: core_bench [count] [add|cancel|cross|deep]\n";
+    std::cerr << "usage: core_bench [count] [add|cancel|cross|deep] [baseline|pooled]\n";
     return 2;
   }
-  Engine engine(static_cast<size_t>(n) * 12 + 10, static_cast<size_t>(n) * 20 + 10);
+  EngineOptions options{static_cast<size_t>(n) * 12 + 10, static_cast<size_t>(n) * 20 + 10,
+                        allocator == "pooled" ? AllocatorMode::Pooled : AllocatorMode::Baseline};
+  Engine engine(options);
+  options.allocator = AllocatorMode::Baseline;
+  Engine oracle(options);
   auto command = [](int i, Side side, long price, long qty) {
     Command c;
     c.client = "bench";
@@ -29,12 +34,15 @@ int main(int argc, char **argv) {
   };
   // Setup excluded: preload a stable number of orders for cancel/cross/deep.
   if (workload != "add")
-    for (int i = 0; i < (workload == "deep" ? n * 10 : n); ++i)
-      engine.execute(command(i, Side::Sell, workload == "deep" ? 100 + i % 1000 : 100, 1));
+    for (int i = 0; i < (workload == "deep" ? n * 10 : n); ++i) {
+      auto c = command(i, Side::Sell, workload == "deep" ? 100 + i % 1000 : 100, 1);
+      engine.execute(c);
+      oracle.execute(c);
+    }
   std::vector<long long> ns;
   ns.reserve(n);
   size_t events = 0, rejected = 0;
-  const auto all_start = Clock::now();
+  long long total_ns = 0;
   for (int i = 0; i < n; ++i) {
     Command c;
     if (workload == "cancel") {
@@ -47,14 +55,27 @@ int main(int argc, char **argv) {
     auto start = Clock::now();
     auto r = engine.execute(c);
     auto end = Clock::now();
-    ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    ns.push_back(duration);
+    total_ns += duration;
+    auto expected = oracle.execute(c);
+    if (r.sequence != expected.sequence || r.accepted != expected.accepted ||
+        r.code != expected.code || r.events.size() != expected.events.size()) {
+      std::cerr << "oracle mismatch\n";
+      return 1;
+    }
     events += r.events.size();
     rejected += !r.accepted;
   }
-  auto elapsed = std::chrono::duration<double>(Clock::now() - all_start).count();
+  if (engine.checkpoint() != oracle.checkpoint()) {
+    std::cerr << "state mismatch\n";
+    return 1;
+  }
+  auto elapsed = total_ns / 1e9;
   std::sort(ns.begin(), ns.end());
   auto p = [&](double q) { return ns[static_cast<size_t>(q * (ns.size() - 1))]; };
-  std::cout << "{\"workload\":\"" << workload << "\",\"samples\":" << n
+  std::cout << "{\"allocator\":\"" << allocator << "\",\"workload\":\"" << workload
+            << "\",\"samples\":" << n
             << ",\"setup_orders\":" << (workload == "add" ? 0 : (workload == "deep" ? n * 10 : n))
             << ",\"events\":" << events << ",\"rejected\":" << rejected
             << ",\"elapsed_seconds\":" << elapsed << ",\"commands_per_second\":" << n / elapsed

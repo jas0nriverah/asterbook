@@ -66,6 +66,62 @@ int main() {
     assert(bad);
     assert(!std::filesystem::exists(missing));
   }
+  {
+    auto batch_wal = (dir / "batch").string();
+    Command first = c;
+    first.request = "batch1";
+    first.id = "batch1";
+    first.qty = 3;
+    Command conflict = first;
+    conflict.qty = 4;
+    Command second = first;
+    second.request = "batch2";
+    second.id = "batch2";
+    std::string expected;
+    {
+      DurableEngine e(batch_wal);
+      auto results = e.execute_batch({first, first, conflict, second});
+      assert(results.size() == 4 && results[0].accepted && results[1].duplicate);
+      assert(results[2].code == "REQUEST_CONFLICT" && results[3].sequence == 2);
+      assert(e.sync_count() == 1);
+      assert(e.execute_batch({}).empty());
+      assert(e.execute_batch({first, conflict})[0].duplicate && e.sync_count() == 1);
+      expected = e.state();
+    }
+    DurableEngine reopened(batch_wal);
+    assert(reopened.state() == expected);
+    assert(reopened.execute(first).duplicate);
+  }
+  {
+    auto batch_wal = (dir / "capacity-batch").string();
+    Command a = c;
+    a.request = "a";
+    a.id = "a";
+    a.qty = 1;
+    Command b = a;
+    b.request = "b";
+    b.id = "b";
+    b.price = 0;
+    Command d = a;
+    d.request = "d";
+    d.id = "d";
+    Command conflict = a;
+    conflict.qty = 9;
+    std::string expected;
+    {
+      DurableEngine e(batch_wal, 100, 2);
+      assert(e.execute(a).accepted);
+      auto results = e.execute_batch({a, conflict, b, b, d});
+      assert(results[0].duplicate && results[1].code == "REQUEST_CONFLICT");
+      assert(results[2].code == "INVALID_PRICE_OR_QTY" && results[2].sequence == 2);
+      assert(results[3].duplicate && results[4].code == "HISTORY_CAPACITY");
+      expected = e.state();
+    }
+    DurableEngine reopened(batch_wal, 100, 2);
+    assert(reopened.state() == expected);
+    assert(reopened.execute(b).duplicate);
+    assert(reopened.execute(d).code == "HISTORY_CAPACITY");
+  }
   // Equal-sized, independently valid records cannot be reordered.
   {
     auto reordered = (dir / "reordered").string();

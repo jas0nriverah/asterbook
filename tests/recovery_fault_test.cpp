@@ -29,7 +29,10 @@ int main() {
     if (pid == 0) {
       setenv("ASTERBOOK_TEST_FAULT", stage, 1);
       DurableEngine e(path);
-      e.execute(command());
+      auto second = command();
+      second.request = "r2";
+      second.id = "id2";
+      e.execute_batch({command(), second});
       _exit(91);
     }
     int status = 0;
@@ -37,8 +40,13 @@ int main() {
     DurableEngine e(path);
     auto result = e.execute(command());
     assert(result.accepted);
+    auto second = command();
+    second.request = "r2";
+    second.id = "id2";
+    auto result2 = e.execute(second);
+    assert(result2.accepted);
     if (std::string(stage) != "after_append")
-      assert(result.duplicate);
+      assert(result.duplicate && result2.duplicate);
   }
   for (const char *stage : {"throw_append", "throw_sync"}) {
     auto path = (dir / stage).string();

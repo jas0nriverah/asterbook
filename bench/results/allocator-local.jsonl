@@ -1,0 +1,8 @@
+{"allocator":"baseline","workload":"add","samples":5000,"setup_orders":0,"events":5000,"rejected":0,"elapsed_seconds":0.0121556,"commands_per_second":411333,"latency_ns":{"p50":2250,"p95":3334,"p99":4875}}
+{"allocator":"pooled","workload":"add","samples":5000,"setup_orders":0,"events":5000,"rejected":0,"elapsed_seconds":0.00699588,"commands_per_second":714707,"latency_ns":{"p50":1333,"p95":1542,"p99":2750}}
+{"allocator":"baseline","workload":"cancel","samples":5000,"setup_orders":5000,"events":5000,"rejected":0,"elapsed_seconds":0.00587404,"commands_per_second":851202,"latency_ns":{"p50":1125,"p95":1459,"p99":2000}}
+{"allocator":"pooled","workload":"cancel","samples":5000,"setup_orders":5000,"events":5000,"rejected":0,"elapsed_seconds":0.00570402,"commands_per_second":876574,"latency_ns":{"p50":1125,"p95":1333,"p99":1875}}
+{"allocator":"baseline","workload":"cross","samples":5000,"setup_orders":5000,"events":5000,"rejected":0,"elapsed_seconds":0.0063932,"commands_per_second":782081,"latency_ns":{"p50":1250,"p95":1417,"p99":2125}}
+{"allocator":"pooled","workload":"cross","samples":5000,"setup_orders":5000,"events":5000,"rejected":0,"elapsed_seconds":0.00659152,"commands_per_second":758550,"latency_ns":{"p50":1292,"p95":1417,"p99":2042}}
+{"allocator":"baseline","workload":"deep","samples":1000,"setup_orders":10000,"events":10000,"rejected":0,"elapsed_seconds":0.0047053,"commands_per_second":212526,"latency_ns":{"p50":4584,"p95":5833,"p99":6667}}
+{"allocator":"pooled","workload":"deep","samples":1000,"setup_orders":10000,"events":10000,"rejected":0,"elapsed_seconds":0.00458308,"commands_per_second":218194,"latency_ns":{"p50":4459,"p95":5708,"p99":7000}}

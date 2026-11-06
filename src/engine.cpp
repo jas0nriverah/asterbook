@@ -1,5 +1,7 @@
 #include "asterbook/engine.hpp"
 #include <algorithm>
+#include <new>
+#include <type_traits>
 #include <sstream>
 #include <stdexcept>
 namespace asterbook {
@@ -25,7 +27,7 @@ bool valid_text(const std::string &s) {
   return !s.empty() && s.size() <= 128 &&
          std::all_of(s.begin(), s.end(), [](unsigned char c) { return c >= 33 && c <= 126; });
 }
-}
+} // namespace
 std::string canonical_command(const Command &c) {
   std::string s;
   field(s, c.client);
@@ -37,7 +39,11 @@ std::string canonical_command(const Command &c) {
        std::to_string((int)c.tif) + "," + std::to_string(c.price) + "," + std::to_string(c.qty);
   return s;
 }
-Engine::Engine(std::size_t live, std::size_t history) : max_live_(live), max_history_(history) {}
+Engine::Engine(std::size_t live, std::size_t history)
+    : Engine(EngineOptions{live, history, AllocatorMode::Baseline}) {}
+Engine::Engine(EngineOptions options)
+    : book_(options.allocator == AllocatorMode::Pooled), max_live_(options.max_live),
+      max_history_(options.max_history), allocator_(options.allocator) {}
 // Duplicate results are retained until capacity is reached; they are never evicted.
 std::optional<Result> Engine::precheck(const Command &c) const {
   auto it = dedup_.find(std::make_pair(c.client, c.request));
@@ -176,7 +182,7 @@ std::string textfield(const std::string &s, std::size_t &p) {
   p += n;
   return x;
 }
-}
+} // namespace
 std::string Engine::checkpoint() const {
   std::string s;
   number(s, max_live_);
@@ -222,7 +228,7 @@ void Engine::restore(const std::string &s) {
   auto live = number(s, p), history = number(s, p);
   if (live != max_live_ || history != max_history_)
     throw std::runtime_error("checkpoint capacity mismatch");
-  Engine next(max_live_, max_history_);
+  Engine next(EngineOptions{max_live_, max_history_, allocator_});
   next.sequence_ = number(s, p);
   next.book_.priority = number(s, p);
   if (next.book_.priority > next.sequence_)
@@ -288,7 +294,10 @@ void Engine::restore(const std::string &s) {
   }
   if (p != s.size())
     throw std::runtime_error("checkpoint trailing bytes");
-  *this = std::move(next);
+  static_assert(std::is_nothrow_move_constructible<Engine>::value,
+                "restore requires noexcept move");
+  this->~Engine();
+  new (this) Engine(std::move(next));
 }
 
-}
+} // namespace asterbook

@@ -30,6 +30,14 @@ public:
     items_.pop_front();
     return true;
   }
+  template <class Predicate> bool try_pop_if(T &value, Predicate predicate) {
+    std::lock_guard lock(mutex_);
+    if (items_.empty() || !predicate(items_.front()))
+      return false;
+    value = std::move(items_.front());
+    items_.pop_front();
+    return true;
+  }
   size_t size() {
     std::lock_guard lock(mutex_);
     return items_.size();
@@ -40,4 +48,4 @@ public:
     cv_.notify_all();
   }
 };
-}
+} // namespace asterbook

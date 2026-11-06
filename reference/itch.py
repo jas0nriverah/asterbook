@@ -53,6 +53,10 @@ class Reconstructor:
                 )
             except UnicodeDecodeError as exc:
                 raise FeedError("non-ASCII stock or attribution") from exc
+            if any(not 32 <= c <= 126 for c in payload[24:32]) or (
+                kind == ord("F") and any(not 32 <= c <= 126 for c in payload[36:40])
+            ):
+                raise FeedError("non-printable stock or attribution")
             if (
                 ref in self.seen
                 or side not in (b"B", b"S")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Scheduled synthetic arrivals; records schedule-to-response and generator lag."""
-import argparse, concurrent.futures, json, os, platform, random, socket, subprocess, sys, threading, time, uuid
+import argparse, concurrent.futures, ipaddress, json, os, platform, random, socket, ssl, subprocess, sys, threading, time, uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 from client import request
@@ -18,6 +18,11 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--insecure-local", action="store_true")
+    p.add_argument("--ca")
+    p.add_argument("--cert")
+    p.add_argument("--key")
+    p.add_argument("--principal", default="alice")
     p.add_argument("--rate", type=float, default=100)
     p.add_argument("--count", type=int, default=1000)
     p.add_argument("--workers", type=int, default=8)
@@ -30,6 +35,20 @@ def main():
         "--namespace", default=None, help="unique run namespace; default random UUID"
     )
     a = p.parse_args()
+    if a.insecure_local:
+        try:
+            if not ipaddress.ip_address(a.host).is_loopback:
+                p.error("insecure mode requires loopback IP")
+        except ValueError:
+            p.error("insecure mode requires loopback IP")
+        if a.ca or a.cert or a.key:
+            p.error("cannot combine TLS and insecure options")
+        context = None
+    else:
+        if not all((a.ca, a.cert, a.key)):
+            p.error("--ca, --cert and --key are required")
+        context = ssl.create_default_context(cafile=a.ca)
+        context.load_cert_chain(a.cert, a.key)
     namespace = a.namespace or uuid.uuid4().hex
     if (
         not namespace.isascii()
@@ -51,6 +70,8 @@ def main():
         try:
             if not hasattr(local, "sock"):
                 local.sock = socket.create_connection((a.host, a.port), timeout=10)
+                if context:
+                    local.sock = context.wrap_socket(local.sock, server_hostname=a.host)
                 local.sock.settimeout(10)
                 with lock:
                     sockets.append(local.sock)
@@ -61,12 +82,13 @@ def main():
                 else (prices[i] if a.workload == "deep" else 100)
             )
             # Churn uses each worker's own add then cancel; RTT covers both requests.
-            cmd = f"V1 NEW {namespace} r{i} S {namespace}o{i} {side} GTC {price} 1"
+            cmd = f"V1 NEW {a.principal} {namespace}r{i} S {namespace}o{i} {side} GTC {price} 1"
             response = request(local.sock, cmd)
             response = response.get("result", response)
             if a.workload == "cancel" and response.get("accepted"):
                 response = request(
-                    local.sock, f"V1 CANCEL {namespace} c{i} S {namespace}o{i}"
+                    local.sock,
+                    f"V1 CANCEL {a.principal} {namespace}c{i} S {namespace}o{i}",
                 )
                 response = response.get("result", response)
             return (

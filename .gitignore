@@ -7,3 +7,5 @@ __pycache__/
 *.snapshot
 /asterbook-data/
 /differential-repro.txt
+
+.deps/
