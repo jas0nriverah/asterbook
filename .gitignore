@@ -1,0 +1,9 @@
+/build/
+/.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.journal
+*.snapshot
+/asterbook-data/
+/differential-repro.txt

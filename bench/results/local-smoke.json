@@ -1,0 +1,46 @@
+{
+  "accepted": 100,
+  "achieved_completions_per_s": 50.31629451686986,
+  "build_flags": "server build flags must be recorded separately",
+  "build_type": "Release",
+  "clock": "mach_absolute_time()",
+  "commit": null,
+  "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "cpu": "arm",
+  "duplicates": 0,
+  "elapsed_s": 1.98742775,
+  "errors_sample": [],
+  "generator_dropped": 0,
+  "generator_lag_ms": {
+    "p50": 6.281125,
+    "p95": 8.032792,
+    "p99": 9.115
+  },
+  "git_dirty": true,
+  "latency_boundary": "scheduled arrival to decoded response; cancel includes two round trips",
+  "latency_ms": {
+    "p50": 6.580084,
+    "p95": 8.31525,
+    "p99": 9.60125
+  },
+  "max_inflight": 128,
+  "namespace": "6d952526ba284c7f809e37ad298b6774",
+  "notes": "Small exploratory laptop run; no warmup or CPU affinity; not a capacity claim. Uncommitted source prior to initial commit. Exact source tree digest was not captured, so this sample cannot establish exact source provenance.",
+  "offered_rate_per_s": 50.0,
+  "optimization_flags": "CMake Release defaults (-O3 -DNDEBUG)",
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "python": "3.14.7",
+  "rejected_or_failed": 0,
+  "rejection_codes": {},
+  "scheduled": 100,
+  "seed": 0,
+  "source_tree_sha256": null,
+  "submission_to_response_ms": {
+    "p50": 0.32475,
+    "p95": 0.529375,
+    "p99": 0.733958
+  },
+  "submitted": 100,
+  "workers": 8,
+  "workload": "add"
+}
