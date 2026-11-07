@@ -5,6 +5,8 @@ It measures one scheduled protocol command per slot, including connection setup
 and any wait until a decoded, validated response. This differs from open_loop.py
 items, where a cancel item contains two commands.
 
+Linux records process metrics from `/proc`; macOS uses `ps` for CPU and memory, with unavailable I/O, peak RSS, descriptor counts and affinity recorded as null. Shared-runner CI checks correctness and recovery, not latency or throughput qualification.
+
 For disposable data only:
 
     python3 tools/dev_certs.py /tmp/qualification-certs

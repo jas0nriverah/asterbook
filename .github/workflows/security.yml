@@ -12,6 +12,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: sudo apt-get update && sudo apt-get install -y cppcheck prometheus
       - run: promtool check rules deploy/alerts.yml
+      - run: promtool test rules tests/alerts.test.yml
       - run: cppcheck --error-exitcode=1 --enable=warning,performance,portability --std=c++20 --inline-suppr -I include src tools/itch_main.cpp
       - run: python3 -m venv "$RUNNER_TEMP/audit" && "$RUNNER_TEMP/audit/bin/pip" install pip-audit==2.9.0
       - run: '"$RUNNER_TEMP/audit/bin/pip-audit" -r requirements-dev.txt'

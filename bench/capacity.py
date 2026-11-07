@@ -171,14 +171,23 @@ def ready(value):
     return value.get('ok') is True or bool(value.get('shards')) and all(x['result'].get('ok') for x in value['shards'])
 
 def resource(pid,data):
+    stats=[p.stat() for p in data.rglob('*') if p.is_file()]
+    common=dict(disk_bytes=sum(x.st_size for x in stats),
+                disk_allocated_bytes=sum(x.st_blocks*512 for x in stats),host_load=os.getloadavg())
+    if sys.platform == 'darwin':
+        # ps reports RSS/VSZ in KiB. Unavailable Linux-only counters stay null.
+        values=subprocess.check_output(['ps','-p',str(pid),'-o','time=,rss=,vsz='],text=True).split()
+        if len(values)!=3:raise ValueError('process resource sample unavailable')
+        elapsed=values[0].split(':');cpu=0.0
+        for part in elapsed:cpu=cpu*60+float(part)
+        return dict(cpu_seconds=cpu,memory={'VmRSS':int(values[1])*1024,'VmSize':int(values[2])*1024,'VmHWM':None},
+                    io=None,fd_count=None,**common)
     base=Path('/proc')/str(pid)
     fields=(base/'stat').read_text().rsplit(')',1)[1].split()
     mem={x.split(':')[0]:int(x.split()[1])*1024 for x in (base/'status').read_text().splitlines() if x.startswith(('VmRSS:','VmHWM:','VmSize:'))}
     io={k:int(v) for k,v in (x.split(':') for x in (base/'io').read_text().splitlines())}
-    stats=[p.stat() for p in data.rglob('*') if p.is_file()]
     return dict(cpu_seconds=(int(fields[11])+int(fields[12]))/os.sysconf('SC_CLK_TCK'),memory=mem,io=io,
-                disk_bytes=sum(x.st_size for x in stats),disk_allocated_bytes=sum(x.st_blocks*512 for x in stats),
-                fd_count=len(list((base/'fd').iterdir())),host_load=os.getloadavg())
+                fd_count=len(list((base/'fd').iterdir())),**common)
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
@@ -258,7 +267,7 @@ def main(argv=None):
                   source_tree_sha256=source_digest(),binary=str(a.server.resolve()),
                   binary_sha256=hashlib.sha256(a.server.read_bytes()).hexdigest(),command=sys.argv,
                   config=vars(a).copy(),server_command=args,start_ns=start,scheduled=total,client_config=cfg,
-                  affinity=sorted(os.sched_getaffinity(0)),warmup='no requests; start delay only prepares processes',
+                  affinity=sorted(os.sched_getaffinity(0)) if hasattr(os,"sched_getaffinity") else None,warmup='no requests; start delay only prepares processes',
                   tcp_nodelay=True,
                   load_boundary='one scheduled protocol command per slot, scheduled arrival to validated decoded result')
         plan['config']={k:str(v) if isinstance(v,Path) else v for k,v in plan['config'].items()}
