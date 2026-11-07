@@ -1,41 +1,69 @@
-# Operations and security
+# Operations
 
-Use a dedicated data directory on persistent local storage and regularly verify backups of the entire directory, including manifest, journals and snapshots. A directory lock prevents simultaneous writers. Keep shard count and per-shard capacity unchanged across restarts; mismatches fail startup. Stop with SIGTERM and wait for exit. Checkpoints do not permit deleting journals. Monitor disk space and logs: disk exhaustion or I/O errors stop service. Test restores.
+Use persistent local storage and an unprivileged service account. Keep code, configuration, and CA material protected from that account. Start from [server.conf.example](../deploy/server.conf.example); validate it with `asterbook validate-config FILE`. Stop with SIGTERM and wait for exit.
 
-## Transport and identity
+## TLS and access
 
-The server binds to `127.0.0.1` by default. Startup requires mutual TLS credentials and an admin policy unless `--insecure-local` is selected. TLS requires version 1.2 or later and verifies client certificates against the configured CA. Configuration validation and startup reject a server leaf certificate outside its validity period. The server key must be a regular file inaccessible to group and other users. A client certificate must have exactly one common name matching the protocol's identifier grammar; that name must match the order command's client field or the server returns `IDENTITY_MISMATCH`.
+Mutual TLS is required. Client certificate common names identify clients; only names in the admin policy can run administrative commands. Keys must be regular files with no group/other permissions. The server rejects expired/not-yet-valid leaf certificates. Keep development certificates out of deployments.
 
-`STATE`, `CHECKPOINT` and `METRICS` require an identity in the admin policy. The file contains one unique identity per line, with no blank lines or comments; an empty file grants no administrators. Invalid or missing configuration fails startup. Protect the CA, keys and policy with OS access controls. Trusted certificate holders have their identity's authority. Live policy reload is not implemented. Use short-lived certificates. To remove administrator access, update the policy and restart. Configure a current CRL for certificate revocation; restart to disconnect existing sessions. Without a CRL, replace the trusted CA and reissue unaffected certificates.
+Rotate certificates, CA/CRL, and admin policy by validating new files and restarting. A configured CRL must be current and CA-signed. Restart disconnects revoked sessions. Without a CRL, rotate the trusted CA. `--insecure-local` is loopback-only and must not be exposed through a proxy.
 
-`--insecure-local` permits unauthenticated plaintext only on IPv4 loopback. Do not expose it through a proxy or tunnel. For a disposable TLS demonstration, run `./scripts/secure-demo.sh`. For manual credentials:
+## Replication and failover
 
-```sh
-python3 tools/dev_certs.py /tmp/asterbook-dev-certs
-build/release/asterbook server --data-dir /tmp/asterbook-demo --tls-cert /tmp/asterbook-dev-certs/server.crt --tls-key /tmp/asterbook-dev-certs/server.key --tls-ca /tmp/asterbook-dev-certs/ca.crt --admin-policy /tmp/asterbook-dev-certs/admins.txt
-python3 tools/client.py --host localhost --ca /tmp/asterbook-dev-certs/ca.crt --cert /tmp/asterbook-dev-certs/alice.crt --key /tmp/asterbook-dev-certs/alice.key 'NEW alice r1 XYZ o1 BUY GTC 100 1'
+Provision two nodes with the same shard count, capacities, and initial data. Use a dedicated client-auth certificate with common name `replicator`; keep its key on the primary. Use a separate replication CA if practical. Start the standby first, adding:
+
+```ini
+standby-identity=replicator
 ```
 
-These generated credentials are for development. The client verifies the server chain and hostname.
+Add these options to the primary's configuration:
 
-## Limits
+```ini
+replica-host=192.0.2.20
+replica-port=9000
+replica-name=standby.example.internal
+replica-cert=/etc/asterbook/replicator.crt
+replica-key=/etc/asterbook/replicator.key
+replica-ca=/etc/asterbook/standby-ca.crt
+```
 
-Defaults are 10,000 live orders and 1,000,000 history entries per shard, 256 queued commands, 128 clients, a 4,096-byte request limit, a 32 MiB response limit, a 30-second frame deadline and a 5-second queue deadline. `--shards` accepts 1–16. Queue, live-order, history and timeout limits are configurable; consult server usage for options. The gateway also limits request rate and closes slow or idle connections.
+`replica-host` is an IPv4 address; `replica-name` must match the standby server certificate. Both nodes still need their normal TLS server credentials and admin policies. Start empty nodes together, or seed a stopped node using a verified offline backup. Startup rejects different state, capacities, shard counts, or a peer that is not a standby.
 
-A full queue returns `OVERLOADED`; a queued command past its deadline returns `DEADLINE_EXCEEDED` before execution. Retry with the same request identity. Oversized administrative responses return `RESPONSE_TOO_LARGE`; an oversized mutating response triggers fail-stop handling. A disconnected client must retry the identical request after recovery. Per-shard metrics and aggregate snapshots are not transactionally consistent.
+To fail over:
 
-## Linux deployment and upgrades
+1. Fence the old primary: stop it and prevent restart, or isolate/power it off using infrastructure controls. A timeout alone is not fencing.
+2. Stop the standby. Restore a verified copy of its data to a replacement standby and start that replacement with `standby-identity=replicator`.
+3. Remove `standby-identity` from the promoted node and configure its `replica-*` options for the replacement. Start it, check authenticated readiness, and redirect clients.
+4. Retry ambiguous requests with their original client/request IDs and payloads. Re-seed the old primary before returning it as a standby.
 
-Linux release artifacts are built on the target architecture by the release workflow or `scripts/package-release.py --version VERSION --build-dir build/release --output dist`. They contain the server, ITCH tool, recovery verifier, and Python monitoring and recovery tools. The package links to the build host's system C++ runtime, libc and OpenSSL: build on a compatible baseline and check dependencies with `ldd` on the destination. The SHA-256 file detects accidental corruption; obtain the expected digest from a trusted independent channel, since a checksum distributed alongside an untrusted archive is not a signature.
+For an explicit single-node recovery, omit the promoted node's `replica-*` options. Subsequent writes then have only one durable copy. Do not run two writable primaries. Neither certificate identity nor a local file lock fences a different host.
 
-Use a dedicated root-owned `/opt/asterbook` directory and serialize upgrades through `scripts/release.py`. It validates the supplied digest and internal manifest, stages a versioned release and atomically replaces `current`; `previous` records the prior version. A durable intent allows the next installer invocation to finish an interrupted two-link update; run `python3 scripts/release.py --root /opt/asterbook status` to reconcile before restarting after an interrupted upgrade. The two links are not updated atomically together. Do not run activation while the service is operating: stop it, take and verify a backup, install, then restart and check authenticated readiness and logs. If health checks fail, stop it, run `python3 scripts/release.py --root /opt/asterbook rollback`, restart, and check health again. Rollback swaps the links and does not undo data-format changes; test recovery and version compatibility before an upgrade. Protect the release root from untrusted writes. Existing versions are never overwritten. Install with `python3 scripts/release.py --root /opt/asterbook install ARCHIVE.tar.gz --sha256 TRUSTED_SHA256`. Run the installer as the owner of that root.
+## Compaction and backups
 
-Create an unprivileged `asterbook` system user and group; keep the installation and `/etc/asterbook` owned by root. Give the service sole write access to `/var/lib/asterbook` and no write access to code or configuration. Install `deploy/asterbook.service` and a reviewed copy of `deploy/server.conf.example` as `/etc/asterbook/server.conf`. The service must be able to traverse its credential directory; use root-owned directories with restrictive access, root-owned readable certificates and policy, and an `asterbook`-owned private key mode `0600` (the server rejects group/other-accessible keys). Protect the CA private key separately, offline. Validate with `/opt/asterbook/current/bin/asterbook validate-config /etc/asterbook/server.conf` as the service user, then install and enable the unit with the host's systemd procedures. The unit restricts filesystem writes to the data directory and grants no capabilities. Review paths and limits for the host before enabling it.
+Send authenticated `V1 COMPACT` to compact each shard at a queue barrier. It preserves deduplication and order IDs, blocks that shard while writing, and requires free space for both journal copies. Compact nodes independently. Never delete journals or lock files manually. Older binaries cannot recover compacted journals; retain a pre-upgrade backup for rollback.
 
-To install the optional daily offline backup timer, provision protected `/var/backups/asterbook` storage on a separate failure domain, preferably off-host, and verify the intended mount is available, install `deploy/backup.sh` as root-owned `/usr/local/sbin/asterbook-backup`, install both backup unit files, then enable `asterbook-backup.timer`. **Each run stops the matching engine**, validates a copy and attempts to restart a previously active service even on backup failure; monitor backup and restart failures. Review the script's paths and retention before enabling. `RequiresMountsFor` orders configured mounts but does not prove a separate mount exists: configure and monitor the mount explicitly. A host crash or forced termination can leave the engine stopped; check service and backup status and restart manually when appropriate. Set a backup frequency and retention based on your own recovery point and recovery time objectives, then measure both with restore drills; the defaults are a schedule, not measured guarantees. Test a restore to a new directory before an incident. For example, `python3 /opt/asterbook/current/tools/recovery.py restore --backup BACKUP_DIR --destination NEW_DATA_DIR --verifier /opt/asterbook/current/bin/recovery_verify`.
+Backups are offline. Stop the service, then run:
 
-For certificate rotation, provision new server certificate and key and client CA/CRL files with the same restrictive access, validate the new configuration as the service account, then restart and check client connectivity and readiness. Where configured, `tls-crl` is a current PEM CRL signed by the first certificate in the trusted CA file. Update it for revoked client certificates and restart to disconnect existing sessions; without a CRL, rotate the trusted CA to revoke a certificate. Restart after changes to the admin policy as well. Track expiry and rehearse rotation.
+```sh
+python3 tools/recovery.py backup --data-dir DATA --root BACKUPS --keep 7 --verifier build/release/recovery_verify
+python3 tools/recovery.py restore --backup BACKUPS/backup-NAME --destination NEW_DATA --verifier build/release/recovery_verify
+```
 
-## Monitoring
+Backups verify hashes and replay before publication. Restore requires a new destination. Store copies off-host and rehearse restore/retry behavior. [Backup timer](../deploy/asterbook-backup.timer) and [script](../deploy/backup.sh) are examples: they stop the service and attempt to restart it even after backup failure. Configure and monitor the backup mount explicitly.
 
-Create a separate `asterbook-monitor` account and review `deploy/asterbook-monitor.service`; provision its own administrator client certificate and a private key owned by that account with mode `0600`. Grant directory traversal required to stat the data filesystem without granting data-file read access. Install and enable the unit after editing paths and server name. Alternatively, run `python3 /opt/asterbook/current/tools/monitor.py --listen 127.0.0.1 --port 9108 --upstream-host 127.0.0.1 --upstream-port 9000 --server-name localhost --ca CA_FILE --cert ADMIN_CLIENT_CERT --key ADMIN_CLIENT_KEY --data-dir /var/lib/asterbook` under a separate restricted service account. Grant that identity access only to its own client key, certificates and what is needed to inspect the data filesystem. The exporter uses an administrator identity and serves unauthenticated HTTP; keep its listener private and protect any remote scrape path. `/healthz` reports exporter process health; `/readyz` checks authenticated upstream readiness; `/metrics` returns HTTP 503 if the upstream check fails. Readiness exercises each worker and syncs the journal, but does not guarantee sufficient disk space. Merge `deploy/prometheus-scrape.yml` into the existing Prometheus configuration to scrape job `asterbook`; do not replace other jobs. Example rules in `deploy/alerts.yml` cover scrape failure, low disk, queue pressure, overload, business rejections, rate limits and a service-latency tail; adjust thresholds, routing and duration to the deployment, and monitor the backup timer separately. History is bounded per shard and has no eviction or compaction; alert before it fills and plan maintenance for the configured capacity. Histograms are noncumulative log2-nanosecond bins, not Prometheus histogram buckets. Dashboard and alert queries using `asterbook_queue_wait_log2_ns_bin_total` or `asterbook_service_log2_ns_bin_total` must migrate to `asterbook_queue_wait_log2_bin_total` or `asterbook_service_log2_bin_total` respectively; the `log2_ns` label and bin values are unchanged.
+## Deployment and upgrades
+
+Use [asterbook.service](../deploy/asterbook.service) with root-owned code/configuration, service-owned data, and private keys readable only by their owner. Build release packages on a compatible Linux baseline:
+
+```sh
+python3 scripts/package-release.py --version VERSION --build-dir build/release --output dist
+python3 scripts/release.py --root /opt/asterbook install ARCHIVE.tar.gz --sha256 TRUSTED_SHA256
+```
+
+Stop and back up before activation. The installer validates the manifest and publishes `current`/`previous` links with recoverable intent. Run `status` after an interrupted upgrade; `rollback` swaps installed versions but does not downgrade data. Obtain the expected checksum independently; it is not a signature.
+
+## Monitoring and limits
+
+Use [monitor.service](../deploy/asterbook-monitor.service), [Prometheus scrape configuration](../deploy/prometheus-scrape.yml), and [alert rules](../deploy/alerts.yml). Give the exporter its own admin certificate and keep its unauthenticated HTTP listener private. `/healthz` checks the exporter; `/readyz` checks upstream; `/metrics` returns 503 on collection failure. Monitor standby health separately.
+
+Defaults: 128 connections, 4 KiB requests, 32 MiB responses, 256 queued commands, 10,000 live orders and 1,000,000 history entries per shard. History has no eviction. Track disk and history capacity before exhaustion. Histograms are log2-nanosecond bin counters, not Prometheus histograms; service time excludes network latency.

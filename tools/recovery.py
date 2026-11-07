@@ -141,7 +141,12 @@ def verify_backup(directory, verifier):
                 raise ValueError("symlink in backup")
         for n in files:
             actual.add(str((Path(root) / n).relative_to(directory)))
-    if actual != set(names) | {"backup-manifest.json"}:
+    locks = {name + ".lock" for name in names if Path(name).name == "journal"}
+    for name in actual & locks:
+        regular(directory / name)
+        if (directory / name).stat().st_size != 0:
+            raise ValueError("invalid journal lock file")
+    if actual - locks != set(names) | {"backup-manifest.json"}:
         raise ValueError("unexpected backup entries")
     for name in names:
         expected = manifest["files"][name]

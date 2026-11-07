@@ -14,12 +14,15 @@ public:
   Result execute(const Command &);
   std::vector<Result> execute_batch(const std::vector<Command> &);
   std::string state() const { return engine_.state(); }
+  void compact();
+  std::string checkpoint() const { return engine_.checkpoint(); }
   void snapshot(const std::string &path) const;
   std::uint64_t sequence() const noexcept { return engine_.sequence(); }
   std::uint64_t sync_count() const noexcept { return sync_count_; }
 
 private:
   int fd_ = -1;
+  int lock_fd_ = -1;
   std::string path_;
   Engine engine_;
   bool poisoned_ = false;

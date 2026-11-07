@@ -211,14 +211,22 @@ void writeall(int fd, const std::string &data) {
 DurableEngine::DurableEngine(const std::string &path, std::size_t live, std::size_t history,
                              const std::string &snap, AllocatorMode allocator)
     : path_(path), engine_(EngineOptions{live, history, allocator}) {
+  lock_fd_ = ::open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
+  if (lock_fd_ < 0 || flock(lock_fd_, LOCK_EX | LOCK_NB)) {
+    if (lock_fd_ >= 0)
+      ::close(lock_fd_);
+    throw std::runtime_error("WAL already locked");
+  }
   bool created = false;
   fd_ = ::open(path.c_str(), O_RDWR | O_APPEND | (snap.empty() ? (O_CREAT | O_EXCL) : 0), 0600);
   if (fd_ >= 0)
     created = snap.empty();
   else if (errno == EEXIST)
     fd_ = ::open(path.c_str(), O_RDWR | O_APPEND);
-  if (fd_ < 0)
+  if (fd_ < 0) {
+    ::close(lock_fd_);
     throw std::runtime_error("open WAL failed");
+  }
   try {
     if (flock(fd_, LOCK_EX | LOCK_NB))
       throw std::runtime_error("WAL already locked");
@@ -242,7 +250,26 @@ DurableEngine::DurableEngine(const std::string &path, std::size_t live, std::siz
     if (get32(header, hp) != 0x31484241 || get64(header, hp) != live ||
         get64(header, hp) != history)
       throw std::runtime_error("WAL version or capacity mismatch");
-    if (!snap.empty()) {
+    bool compacted = false;
+    if (size >= 36) {
+      auto marker = read_at(fd_, 20, 16);
+      std::size_t cp = 0;
+      if (get32(marker, cp) == 0x314b4241) {
+        auto length = get64(marker, cp);
+        auto sum = get32(marker, cp);
+        if (length > size - 36)
+          throw std::runtime_error("truncated compacted checkpoint");
+        auto checkpoint = read_at(fd_, 36, static_cast<std::size_t>(length));
+        if (checksum(checkpoint) != sum)
+          throw std::runtime_error("compacted checkpoint checksum mismatch");
+        engine_.restore(checkpoint);
+        scan(fd_, 36 + length, size, engine_.sequence(), &engine_);
+        compacted = true;
+      }
+    }
+    if (compacted) {
+      // The embedded checkpoint supersedes any external pre-compaction snapshot.
+    } else if (!snap.empty()) {
       int f = ::open(snap.c_str(), O_RDONLY);
       if (f < 0)
         throw std::runtime_error("open snapshot failed");
@@ -286,12 +313,16 @@ DurableEngine::DurableEngine(const std::string &path, std::size_t live, std::siz
   } catch (...) {
     ::close(fd_);
     fd_ = -1;
+    ::close(lock_fd_);
+    lock_fd_ = -1;
     throw;
   }
 }
 DurableEngine::~DurableEngine() {
   if (fd_ >= 0)
     ::close(fd_);
+  if (lock_fd_ >= 0)
+    ::close(lock_fd_);
 }
 Result DurableEngine::execute(const Command &c) { return execute_batch({c}).front(); }
 std::vector<Result> DurableEngine::execute_batch(const std::vector<Command> &commands) {
@@ -404,3 +435,55 @@ void DurableEngine::snapshot(const std::string &path) const {
   }
 }
 } // namespace asterbook
+
+namespace asterbook {
+void DurableEngine::compact() {
+  if (poisoned_)
+    throw std::runtime_error("WAL unavailable");
+  auto checkpoint = engine_.checkpoint();
+  auto data = read_at(fd_, 0, 20);
+  put32(data, 0x314b4241);
+  put64(data, checkpoint.size());
+  put32(data, checksum(checkpoint));
+  data += checkpoint;
+  std::string temp = path_ + ".compact.XXXXXX";
+  std::vector<char> name(temp.begin(), temp.end());
+  name.push_back(0);
+  int replacement = mkstemp(name.data());
+  if (replacement < 0)
+    throw std::runtime_error("compaction create failed");
+  try {
+    if (flock(replacement, LOCK_EX | LOCK_NB))
+      throw std::runtime_error("compaction lock failed");
+    writeall(replacement, data);
+    if (fsync(replacement))
+      throw std::runtime_error("compaction sync failed");
+    fault("compact_before_publish");
+    if (rename(name.data(), path_.c_str()))
+      throw std::runtime_error("compaction publish failed");
+    fault("compact_after_publish");
+    auto parent = std::filesystem::path(path_).parent_path();
+    if (parent.empty())
+      parent = ".";
+    int directory = ::open(parent.c_str(), O_RDONLY);
+    if (directory < 0)
+      throw std::runtime_error("compaction directory open failed");
+    int rc = fsync(directory);
+    ::close(directory);
+    if (rc)
+      throw std::runtime_error("compaction directory sync failed");
+    fault("compact_after_sync");
+    if (fcntl(replacement, F_SETFL, O_APPEND) < 0)
+      throw std::runtime_error("compaction append mode failed");
+    ::close(fd_);
+    fd_ = replacement;
+    replacement = -1;
+  } catch (...) {
+    poisoned_ = true;
+    if (replacement >= 0)
+      ::close(replacement);
+    unlink(name.data());
+    throw;
+  }
+}
+}

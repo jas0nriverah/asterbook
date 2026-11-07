@@ -19,6 +19,30 @@ int main() {
   auto dir =
       std::filesystem::temp_directory_path() / ("asterbook-fault-" + std::to_string(getpid()));
   std::filesystem::create_directory(dir);
+  for (const char *stage :
+       {"compact_before_publish", "compact_after_publish", "compact_after_sync"}) {
+    auto path = (dir / stage).string();
+    {
+      DurableEngine e(path);
+      assert(e.execute(command()).accepted);
+    }
+    auto pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+      setenv("ASTERBOOK_TEST_FAULT", stage, 1);
+      DurableEngine e(path);
+      e.compact();
+      _exit(91);
+    }
+    int status = 0;
+    assert(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 90);
+    DurableEngine e(path);
+    assert(e.execute(command()).duplicate);
+    auto next = command();
+    next.request = "next";
+    next.id = "next";
+    assert(e.execute(next).accepted);
+  }
   for (const char *stage : {"after_append", "after_sync", "after_apply"}) {
     auto path = (dir / stage).string();
     {
