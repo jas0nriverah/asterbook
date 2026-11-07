@@ -4,6 +4,9 @@
 #include <charconv>
 #include <iostream>
 #include <string>
+#include <fstream>
+#include <set>
+#include <vector>
 using namespace asterbook;
 int main(int argc, char **argv) {
   if (argc < 2) {
@@ -33,22 +36,65 @@ int main(int argc, char **argv) {
     }
     return std::cin.bad() ? 1 : 0;
   }
-  if (mode != "server") {
+  bool validation = mode == "validate-config";
+  if (mode != "server" && !validation) {
     std::cerr << "unknown mode\n";
     return 2;
   }
   GatewayOptions o;
-  for (int i = 2; i < argc; ++i) {
-    std::string a = argv[i];
+  std::vector<std::string> args;
+  if (validation || (argc >= 3 && std::string(argv[2]) == "--config")) {
+    if ((validation && argc != 3) || (!validation && argc != 4)) {
+      std::cerr << "config must be the only argument\n";
+      return 2;
+    }
+    std::ifstream in(argv[validation ? 2 : 3]);
+    if (!in) {
+      std::cerr << "cannot open config\n";
+      return 2;
+    }
+    std::set<std::string> seen;
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line.empty() || line[0] == '#')
+        continue;
+      auto eq = line.find('=');
+      if (eq == std::string::npos || eq == 0 || eq + 1 == line.size() ||
+          !seen.insert(line.substr(0, eq)).second || line.find('\r') != std::string::npos) {
+        std::cerr << "invalid config line\n";
+        return 2;
+      }
+      auto key = line.substr(0, eq), value = line.substr(eq + 1);
+      if (key == "insecure-local") {
+        if (value == "true")
+          args.push_back("--insecure-local");
+        else if (value != "false") {
+          std::cerr << "invalid config boolean\n";
+          return 2;
+        }
+      } else {
+        args.push_back("--" + key);
+        args.push_back(value);
+      }
+    }
+    if (in.bad()) {
+      std::cerr << "cannot read config\n";
+      return 2;
+    }
+  } else
+    for (int i = 2; i < argc; ++i)
+      args.emplace_back(argv[i]);
+  for (size_t i = 0; i < args.size(); ++i) {
+    std::string a = args[i];
     if (a == "--insecure-local") {
       o.insecure_local = true;
       continue;
     }
-    if (i + 1 >= argc) {
+    if (i + 1 >= args.size()) {
       std::cerr << "missing option value\n";
       return 2;
     }
-    std::string v = argv[++i];
+    std::string v = args[++i];
     if (a == "--allocator") {
       if (v == "baseline")
         o.allocator = AllocatorMode::Baseline;
@@ -64,6 +110,8 @@ int main(int argc, char **argv) {
       o.tls_key = v;
     else if (a == "--tls-ca")
       o.tls_ca = v;
+    else if (a == "--tls-crl")
+      o.tls_crl = v;
     else if (a == "--admin-policy")
       o.admin_policy = v;
     else if (a == "--data-dir")
@@ -107,5 +155,7 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
+  if (validation)
+    return validate_gateway_options(o) ? 0 : 1;
   return run_gateway(o);
 }

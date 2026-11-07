@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 namespace asterbook {
-enum class RequestKind { Command, State, Metrics, Checkpoint };
+enum class RequestKind { Command, State, Metrics, Checkpoint, Ready };
 struct Request {
   RequestKind kind = RequestKind::Command;
   Command command{};

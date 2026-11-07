@@ -61,6 +61,11 @@ bool parse_request(std::string_view input, Request &out, std::string &error) {
     out = std::move(r);
     return true;
   }
+  if (t.size() == 1 && t[0] == "READY") {
+    r.kind = RequestKind::Ready;
+    out = std::move(r);
+    return true;
+  }
   if (t.empty())
     return false;
   if (t[0] == "NEW" && t.size() == 9) {

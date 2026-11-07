@@ -1,0 +1,9 @@
+# One key=value per line. Set paths and limits for your deployment.
+data-dir=/var/lib/asterbook
+bind=127.0.0.1
+port=9000
+tls-cert=/etc/asterbook/credentials/server.crt
+tls-key=/etc/asterbook/credentials/server.key
+tls-ca=/etc/asterbook/credentials/client-ca.crt
+admin-policy=/etc/asterbook/credentials/admins.txt
+# tls-crl=/etc/asterbook/credentials/client.crl

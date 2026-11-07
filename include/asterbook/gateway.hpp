@@ -9,7 +9,7 @@ struct GatewayOptions {
   std::string bind = "127.0.0.1";
   uint16_t port = 9000;
   bool insecure_local = false;
-  std::string tls_cert, tls_key, tls_ca, admin_policy;
+  std::string tls_cert, tls_key, tls_ca, tls_crl, admin_policy;
   size_t handshake_timeout_ms = 10000;
   size_t queue_capacity = 256;
   size_t batch_size = 1;
@@ -21,5 +21,6 @@ struct GatewayOptions {
   size_t frame_timeout_ms = 30000;
   size_t queue_timeout_ms = 5000;
 };
+bool validate_gateway_options(const GatewayOptions &options);
 int run_gateway(const GatewayOptions &options);
 }

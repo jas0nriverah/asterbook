@@ -1,5 +1,6 @@
 #include "asterbook/tls.hpp"
 #include <openssl/x509.h>
+#include <openssl/pem.h>
 #include <fstream>
 #include <sys/stat.h>
 #include <stdexcept>
@@ -13,8 +14,8 @@ static bool valid_identity(const std::string &s) {
       return false;
   return true;
 }
-TlsContext make_tls_context(const std::string &cert, const std::string &key,
-                            const std::string &ca) {
+TlsContext make_tls_context(const std::string &cert, const std::string &key, const std::string &ca,
+                            const std::string &crl) {
   struct stat key_stat{};
   if (stat(key.c_str(), &key_stat) != 0 || !S_ISREG(key_stat.st_mode) || (key_stat.st_mode & 0077))
     throw std::runtime_error(
@@ -26,6 +27,33 @@ TlsContext make_tls_context(const std::string &cert, const std::string &key,
       SSL_CTX_check_private_key(ctx.get()) != 1 ||
       SSL_CTX_load_verify_locations(ctx.get(), ca.c_str(), nullptr) != 1)
     throw std::runtime_error("invalid TLS certificate, key, or client CA");
+  if (!crl.empty()) {
+    // Fail closed before listening if the configured CRL is stale or untrusted.
+    FILE *cf = fopen(ca.c_str(), "r"), *rf = fopen(crl.c_str(), "r");
+    X509 *issuer = cf ? PEM_read_X509(cf, nullptr, nullptr, nullptr) : nullptr;
+    X509_CRL *list = rf ? PEM_read_X509_CRL(rf, nullptr, nullptr, nullptr) : nullptr;
+    if (cf)
+      fclose(cf);
+    if (rf)
+      fclose(rf);
+    EVP_PKEY *pub = issuer ? X509_get_pubkey(issuer) : nullptr;
+    bool valid = issuer && list && pub &&
+                 X509_NAME_cmp(X509_get_subject_name(issuer), X509_CRL_get_issuer(list)) == 0 &&
+                 X509_CRL_verify(list, pub) == 1 && X509_CRL_get0_lastUpdate(list) &&
+                 X509_cmp_current_time(X509_CRL_get0_lastUpdate(list)) < 0 &&
+                 X509_CRL_get0_nextUpdate(list) &&
+                 X509_cmp_current_time(X509_CRL_get0_nextUpdate(list)) > 0;
+    EVP_PKEY_free(pub);
+    X509_free(issuer);
+    X509_CRL_free(list);
+    if (!valid)
+      throw std::runtime_error("invalid or expired client CRL");
+    X509_STORE *store = SSL_CTX_get_cert_store(ctx.get());
+    X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
+    if (!lookup || X509_load_crl_file(lookup, crl.c_str(), X509_FILETYPE_PEM) != 1 ||
+        X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL) != 1)
+      throw std::runtime_error("invalid client CRL");
+  }
   SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
   return ctx;
 }

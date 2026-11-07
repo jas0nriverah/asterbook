@@ -1,0 +1,28 @@
+[Unit]
+Description=AsterBook authenticated metrics exporter
+After=network.target asterbook.service
+
+[Service]
+Type=simple
+User=asterbook-monitor
+Group=asterbook-monitor
+ExecStart=/usr/bin/python3 /opt/asterbook/current/tools/monitor.py --listen 127.0.0.1 --port 9108 --upstream-host 127.0.0.1 --upstream-port 9000 --server-name localhost --ca /etc/asterbook/monitor/ca.crt --cert /etc/asterbook/monitor/client.crt --key /etc/asterbook/monitor/client.key --data-dir /var/lib/asterbook
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

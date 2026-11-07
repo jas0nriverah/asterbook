@@ -1,0 +1,12 @@
+[Unit]
+Description=Offline AsterBook backup (stops the matching engine)
+After=local-fs.target
+RequiresMountsFor=/var/backups/asterbook
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/asterbook-backup
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

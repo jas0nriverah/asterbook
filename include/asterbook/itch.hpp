@@ -8,11 +8,11 @@
 
 namespace asterbook::itch {
 struct Order {
-  uint16_t locate;
-  char side;
-  uint32_t shares;
+  uint16_t locate{};
+  char side{};
+  uint32_t shares{};
   std::string symbol;
-  uint32_t price;
+  uint32_t price{};
   std::optional<std::string> attribution;
 };
 // Validation errors preserve state. Discard the instance after allocation failure.

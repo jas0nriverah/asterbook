@@ -6,7 +6,7 @@ mkdir -p "$root/itch-corpus" "$root/parser-corpus"
 python3 - "$root/parser-corpus" <<'PYSEED'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
-seeds = [b"V1 NEW alice r1 ABC a BUY IOC 100 1", b"V1 NEW bob r2 ABC b SELL GTC 100 1", b"V1 CANCEL alice r3 ABC a", b"V1 REPLACE alice r4 ABC a b 101 2", b"V1 STATE", b"V1 METRICS", b"V1 CHECKPOINT", b"V1 NEW a r S o BUY GTC 18446744073709551615 0", b"V1 NEW ! r S o BUY GTC 1 1", b"X" * 4097]
+seeds = [b"V1 NEW alice r1 ABC a BUY IOC 100 1", b"V1 NEW bob r2 ABC b SELL GTC 100 1", b"V1 CANCEL alice r3 ABC a", b"V1 REPLACE alice r4 ABC a b 101 2", b"V1 STATE", b"V1 METRICS", b"V1 READY", b"V1 CHECKPOINT", b"V1 NEW a r S o BUY GTC 18446744073709551615 0", b"V1 NEW ! r S o BUY GTC 1 1", b"X" * 4097]
 for i, seed in enumerate(seeds): (p / str(i)).write_bytes(seed)
 PYSEED
 PYTHONPATH=reference python3 - "$root/itch-corpus/lifecycle" <<'PY'

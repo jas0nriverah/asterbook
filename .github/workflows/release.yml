@@ -1,0 +1,45 @@
+name: Linux release package
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version for the package
+        required: true
+        type: string
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - run: cmake --preset release && cmake --build --preset release && ctest --preset release
+      - name: Verify service unit
+        run: |
+          sed "s|/opt/asterbook/current/bin/asterbook|$PWD/build/release/asterbook|" deploy/asterbook.service > /tmp/asterbook.service
+          sed "s|/usr/local/sbin/asterbook-backup|$PWD/deploy/backup.sh|" deploy/asterbook-backup.service > /tmp/asterbook-backup.service
+          cp deploy/asterbook-backup.timer deploy/asterbook-monitor.service /tmp/
+          systemd-analyze verify /tmp/asterbook.service /tmp/asterbook-monitor.service /tmp/asterbook-backup.service /tmp/asterbook-backup.timer
+      - name: Build versioned package
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${INPUT_VERSION:-$REF_NAME}"
+          python3 scripts/package-release.py --version "$VERSION" --build-dir build/release --output dist
+      - name: Smoke-test packaged binary and config
+        run: |
+          ARCHIVE=$(find dist -name "*.tar.gz" -print -quit)
+          DIGEST=$(sha256sum "$ARCHIVE" | cut -d" " -f1)
+          python3 scripts/release.py --root "$RUNNER_TEMP/asterbook-install" install "$ARCHIVE" --sha256 "$DIGEST"
+          python3 tools/dev_certs.py "$RUNNER_TEMP/certs"
+          sed -e "s|/var/lib/asterbook|$RUNNER_TEMP/data|" -e "s|/etc/asterbook/credentials|$RUNNER_TEMP/certs|g" -e "s|client-ca.crt|ca.crt|" -e "s|admins.txt|admins.txt|" deploy/server.conf.example > "$RUNNER_TEMP/server.conf"
+          "$RUNNER_TEMP/asterbook-install/current/bin/asterbook" validate-config "$RUNNER_TEMP/server.conf"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: asterbook-linux-${{ github.run_id }}
+          path: dist/*
+          if-no-files-found: error

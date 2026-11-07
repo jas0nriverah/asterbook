@@ -9,9 +9,9 @@
 namespace asterbook {
 struct Order {
   std::string id, owner, symbol;
-  Side side;
-  std::int64_t price, qty;
-  std::uint64_t priority;
+  Side side{Side::Buy};
+  std::int64_t price{}, qty{};
+  std::uint64_t priority{};
 };
 // The engine is single-writer. Price/time ordering is explicit and deterministic.
 class Book {

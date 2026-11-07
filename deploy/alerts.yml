@@ -1,0 +1,48 @@
+groups:
+  - name: asterbook
+    rules:
+      - alert: AsterBookExporterUnavailable
+        expr: up{job="asterbook"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: AsterBook exporter or authenticated upstream is unavailable
+      - alert: AsterBookLowDisk
+        expr: asterbook_disk_available_bytes < 1073741824
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: AsterBook data filesystem has less than 1 GiB available
+      - alert: AsterBookOverload
+        expr: increase(asterbook_overload_total[5m]) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: AsterBook has rejected overloaded requests
+      - alert: AsterBookQueueNearCapacity
+        expr: asterbook_queue_depth / clamp_min(asterbook_queue_capacity, 1) > 0.8
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: AsterBook aggregate queue is over 80% full}
+      - alert: AsterBookBusinessRejections
+        expr: increase(asterbook_rejected_commands_total[5m]) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: AsterBook is rejecting business commands}
+      - alert: AsterBookRateLimited
+        expr: increase(asterbook_rate_limited_total[5m]) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: AsterBook is rate limiting requests}
+      - alert: AsterBookServiceLatencyTail
+        expr: |
+          sum by (instance) (rate(asterbook_service_log2_ns_bin_total{log2_ns=~"2[4-9]|3[01]"}[5m]))
+          / clamp_min(sum by (instance) (rate(asterbook_service_log2_ns_bin_total[5m])), 0.001) > 0.01
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: Over 1% of service times are at least about 16.8 ms}
+      - alert: AsterBookHistoryNearCapacity
+        expr: asterbook_history_usage / clamp_min(asterbook_history_capacity, 1) >= 0.8
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: AsterBook shard history is at least 80% full}

@@ -27,3 +27,25 @@ for rate in ("nan", "inf", "-inf", "0"):
         text=True,
     )
     assert result.returncode == 2 and "finite" in result.stderr
+
+for option in (
+    "slow-client-ms",
+    "max-p99-ms",
+    "max-error-rate",
+    "max-drop-rate",
+    "min-throughput",
+):
+    for value in ("nan", "inf", "-1"):
+        result = subprocess.run(
+            [sys.executable, str(script), "--insecure-local", f"--{option}={value}"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2, (option, value, result.stderr)
+for option in ("max-error-rate", "max-drop-rate"):
+    result = subprocess.run(
+        [sys.executable, str(script), "--insecure-local", f"--{option}=1.01"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2 and "between 0 and 1" in result.stderr

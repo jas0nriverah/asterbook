@@ -73,5 +73,37 @@ int main() {
     auto result = reopened.execute(command());
     assert(result.accepted && result.duplicate == (std::string(stage) == "throw_sync"));
   }
+  for (const char *stage : {"write_enospc", "write_short_eio", "sync_eio"}) {
+    auto path = (dir / stage).string();
+    {
+      DurableEngine e(path);
+      setenv("ASTERBOOK_TEST_FAULT", stage, 1);
+      bool failed = false;
+      try {
+        e.execute(command());
+      } catch (...) {
+        failed = true;
+      }
+      unsetenv("ASTERBOOK_TEST_FAULT");
+      assert(failed);
+      failed = false;
+      try {
+        e.execute(command());
+      } catch (...) {
+        failed = true;
+      }
+      assert(failed);
+    }
+    bool failed = false;
+    try {
+      DurableEngine reopened(path);
+      auto result = reopened.execute(command());
+      assert(result.accepted);
+      assert(result.duplicate == (std::string(stage) == "sync_eio"));
+    } catch (...) {
+      failed = true;
+    }
+    assert(failed == (std::string(stage) == "write_short_eio"));
+  }
   std::filesystem::remove_all(dir);
 }

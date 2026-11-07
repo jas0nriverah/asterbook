@@ -15,6 +15,7 @@ public:
   std::vector<Result> execute_batch(const std::vector<Command> &);
   std::string state() const { return engine_.state(); }
   void snapshot(const std::string &path) const;
+  std::uint64_t sequence() const noexcept { return engine_.sequence(); }
   std::uint64_t sync_count() const noexcept { return sync_count_; }
 
 private:

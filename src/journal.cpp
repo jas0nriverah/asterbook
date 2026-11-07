@@ -181,6 +181,24 @@ std::uint64_t scan(int fd, std::uint64_t pos, std::uint64_t end, std::uint64_t o
 void writeall(int fd, const std::string &data) {
   std::size_t pos = 0;
   while (pos < data.size()) {
+#ifdef ASTERBOOK_TEST_FAULTS
+    const char *injected = std::getenv("ASTERBOOK_TEST_FAULT");
+    if (injected && std::string(injected) == "write_enospc") {
+      errno = ENOSPC;
+      throw std::runtime_error("write failed: ENOSPC");
+    }
+    if (injected && std::string(injected) == "write_short_eio") {
+      if (pos) {
+        errno = EIO;
+        throw std::runtime_error("write failed: EIO");
+      }
+      auto n = ::write(fd, data.data(), std::min<std::size_t>(data.size(), 5));
+      if (n <= 0)
+        throw std::runtime_error("write failed");
+      pos += n;
+      continue;
+    }
+#endif
     auto n = ::write(fd, data.data() + pos, data.size() - pos);
     if (n < 0 && errno == EINTR)
       continue;
@@ -315,6 +333,12 @@ std::vector<Result> DurableEngine::execute_batch(const std::vector<Command> &com
     writeall(fd_, records);
     fault("after_append");
     fault("throw_sync");
+#ifdef ASTERBOOK_TEST_FAULTS
+    if (const char *f = std::getenv("ASTERBOOK_TEST_FAULT"); f && std::string(f) == "sync_eio") {
+      errno = EIO;
+      throw std::runtime_error("WAL sync failed: EIO");
+    }
+#endif
     if (fsync(fd_))
       throw std::runtime_error("WAL sync failed");
     ++sync_count_;

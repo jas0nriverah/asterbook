@@ -41,18 +41,18 @@ struct Work {
   Clock::time_point admitted = Clock::now();
 };
 struct Completion {
-  uint64_t id;
-  size_t shard;
+  uint64_t id{};
+  size_t shard{};
   std::string payload;
 };
 struct Client {
-  int fd;
-  uint64_t id;
+  int fd{-1};
+  uint64_t id{};
   std::shared_ptr<SSL> ssl;
   bool handshake = false;
   short tls_wait = POLLIN;
   std::string principal;
-  char read_buffer[4096];
+  char read_buffer[4096]{};
   Clock::time_point connected = Clock::now();
   std::string input, output;
   size_t offset = 0;
@@ -124,12 +124,11 @@ bool manifest(const GatewayOptions &o) {
   return false;
 }
 }
-int run_gateway(const GatewayOptions &opt) {
-  stopping = 0;
+bool validate_gateway_options(const GatewayOptions &opt) {
   in_addr addr{};
   if (inet_pton(AF_INET, opt.bind.c_str(), &addr) != 1) {
-    std::cerr << "invalid IPv4 bind address\n";
-    return 1;
+    std::cerr << "{\"event\":\"config_error\",\"reason\":\"invalid_bind\"}\n";
+    return false;
   }
   bool loopback = (ntohl(addr.s_addr) >> 24) == 127;
   TlsContext tls;
@@ -137,22 +136,50 @@ int run_gateway(const GatewayOptions &opt) {
   try {
     if (opt.insecure_local) {
       if (!loopback || !opt.tls_cert.empty() || !opt.tls_key.empty() || !opt.tls_ca.empty() ||
-          !opt.admin_policy.empty())
+          !opt.admin_policy.empty() || !opt.tls_crl.empty())
         throw std::runtime_error("--insecure-local requires loopback and no TLS options");
     } else {
       if (opt.tls_cert.empty() || opt.tls_key.empty() || opt.tls_ca.empty() ||
           opt.admin_policy.empty())
         throw std::runtime_error("TLS certificate, key, client CA and admin policy are required");
-      tls = make_tls_context(opt.tls_cert, opt.tls_key, opt.tls_ca);
+      tls = make_tls_context(opt.tls_cert, opt.tls_key, opt.tls_ca, opt.tls_crl);
       admins = load_admins(opt.admin_policy);
     }
   } catch (const std::exception &e) {
-    std::cerr << "security configuration: " << e.what() << "\n";
+    std::cerr << "{\"event\":\"config_error\",\"reason\":\"security_configuration\"}\n";
+    return false;
+  }
+  // Non-mutating access check only; startup and writes still have to succeed.
+  std::filesystem::path data(opt.data_dir);
+  std::error_code ec;
+  while (!data.empty() && !std::filesystem::exists(data, ec)) {
+    if (ec)
+      break;
+    auto parent = data.parent_path();
+    data = parent.empty() ? std::filesystem::path(".") : parent;
+  }
+  if (ec || data.empty() || !std::filesystem::is_directory(data, ec) || ec ||
+      access(data.c_str(), W_OK | X_OK) != 0) {
+    std::cerr << "{\"event\":\"config_error\",\"reason\":\"data_directory_access\"}\n";
+    return false;
+  }
+  return true;
+}
+int run_gateway(const GatewayOptions &opt) {
+  stopping = 0;
+  if (!validate_gateway_options(opt))
     return 1;
+  in_addr addr{};
+  inet_pton(AF_INET, opt.bind.c_str(), &addr);
+  TlsContext tls;
+  std::set<std::string> admins;
+  if (!opt.insecure_local) {
+    tls = make_tls_context(opt.tls_cert, opt.tls_key, opt.tls_ca, opt.tls_crl);
+    admins = load_admins(opt.admin_policy);
   }
   int listener = socket(AF_INET, SOCK_STREAM, 0);
   if (listener < 0) {
-    perror("socket");
+    std::cerr << "{\"event\":\"io_error\",\"operation\":\"socket\"}\n";
     return 1;
   }
   int one = 1;
@@ -163,7 +190,7 @@ int run_gateway(const GatewayOptions &opt) {
   sa.sin_port = htons(opt.port);
   if (bind(listener, reinterpret_cast<sockaddr *>(&sa), sizeof(sa)) < 0 ||
       listen(listener, 128) < 0 || !nonblock(listener)) {
-    perror("listen");
+    std::cerr << "{\"event\":\"io_error\",\"operation\":\"listen\"}\n";
     close(listener);
     return 1;
   }
@@ -178,7 +205,7 @@ int run_gateway(const GatewayOptions &opt) {
   sigaction(SIGPIPE, &ign, &oldpipe);
   int wake[2] = {-1, -1};
   if (pipe(wake) < 0 || !nonblock(wake[0]) || !nonblock(wake[1])) {
-    perror("pipe");
+    std::cerr << "{\"event\":\"io_error\",\"operation\":\"pipe\"}\n";
     if (wake[0] >= 0)
       close(wake[0]);
     if (wake[1] >= 0)
@@ -192,8 +219,9 @@ int run_gateway(const GatewayOptions &opt) {
   std::mutex cm;
   std::vector<Completion> completions;
   std::atomic<bool> fatal = false;
-  std::atomic<uint64_t> processed = 0, batches = 0, wal_syncs = 0;
+  std::atomic<uint64_t> processed = 0, batches = 0, wal_syncs = 0, rejected_commands = 0;
   std::array<std::atomic<uint64_t>, 32> queue_hist{}, service_hist{};
+  std::array<std::atomic<uint64_t>, 16> history_usage{};
   auto observe = [](auto &hist, Clock::duration duration) {
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
     std::uint64_t n = ns > 0 ? static_cast<std::uint64_t>(ns) : 0;
@@ -247,6 +275,7 @@ int run_gateway(const GatewayOptions &opt) {
       engines.push_back(std::make_unique<DurableEngine>(
           base + "/journal", opt.max_live, opt.max_history,
           std::filesystem::exists(snap) ? snap : "", opt.allocator));
+      history_usage[i] = engines.back()->sequence();
       queues.push_back(std::make_unique<BoundedQueue<Work>>(opt.queue_capacity));
     }
     for (size_t i = 0; i < opt.shards; ++i)
@@ -270,7 +299,16 @@ int run_gateway(const GatewayOptions &opt) {
             std::vector<std::string> outputs(work.size());
             if (work.front().request.kind == RequestKind::State)
               outputs[0] = engine->state();
-            else if (work.front().request.kind == RequestKind::Checkpoint) {
+            else if (work.front().request.kind == RequestKind::Ready) {
+              std::string journal = opt.shards == 1
+                                        ? opt.data_dir + "/journal"
+                                        : opt.data_dir + "/shard-" + std::to_string(i) + "/journal";
+              int fd = open(journal.c_str(), O_WRONLY);
+              bool ok = fd >= 0 && fsync(fd) == 0;
+              if (fd >= 0)
+                close(fd);
+              outputs[0] = ok ? "{\"ok\":true}" : error_json("STORAGE_UNAVAILABLE");
+            } else if (work.front().request.kind == RequestKind::Checkpoint) {
               engine->snapshot(snap);
               outputs[0] = "{\"ok\":true}";
             } else {
@@ -287,11 +325,15 @@ int run_gateway(const GatewayOptions &opt) {
               }
               auto before_sync = engine->sync_count();
               auto results = engine->execute_batch(commands);
+              history_usage[i] = engine->sequence();
               wal_syncs += engine->sync_count() - before_sync;
               if (!commands.empty())
                 ++batches;
-              for (std::size_t j = 0; j < results.size(); ++j)
+              for (std::size_t j = 0; j < results.size(); ++j) {
+                if (!results[j].accepted)
+                  ++rejected_commands;
                 outputs[positions[j]] = result_json(results[j]);
+              }
               if (opt.shards > 1)
                 for (auto &output : outputs)
                   output = "{\"shard\":" + std::to_string(i) + ",\"result\":" + output + "}";
@@ -311,7 +353,7 @@ int run_gateway(const GatewayOptions &opt) {
             char b = 1;
             (void)write(wake[1], &b, 1);
           } catch (const std::exception &e) {
-            std::cerr << "fatal engine/storage error: " << e.what() << "\n";
+            std::cerr << "{\"event\":\"fatal_error\",\"reason\":\"engine_or_storage\"}\n";
             fatal = true;
             char b = 1;
             (void)write(wake[1], &b, 1);
@@ -320,7 +362,10 @@ int run_gateway(const GatewayOptions &opt) {
         }
       });
   } catch (const std::exception &e) {
-    std::cerr << "engine startup: " << e.what() << "\n";
+    if (std::string(e.what()) == "shard manifest mismatch")
+      std::cerr << "{\"event\":\"startup_error\",\"reason\":\"shard manifest mismatch\"}\n";
+    else
+      std::cerr << "{\"event\":\"startup_error\",\"reason\":\"engine_or_storage\"}\n";
     fatal = true;
     for (auto &q : queues)
       q->close();
@@ -338,7 +383,7 @@ int run_gateway(const GatewayOptions &opt) {
   }
   std::unordered_map<uint64_t, Client> clients;
   uint64_t next = 1, overload = 0, malformed = 0, rate_limited = 0, accepted = 0;
-  std::cout << "listening " << opt.bind << ":" << opt.port << std::endl;
+  std::cout << "{\"event\":\"listening\"}" << std::endl;
   while (!stopping && !fatal) {
     {
       std::lock_guard lock(cm);
@@ -419,7 +464,7 @@ int run_gateway(const GatewayOptions &opt) {
     if (n < 0) {
       if (errno == EINTR)
         continue;
-      perror("poll");
+      std::cerr << "{\"event\":\"io_error\",\"operation\":\"poll\"}\n";
       fatal = true;
       break;
     }
@@ -433,7 +478,7 @@ int run_gateway(const GatewayOptions &opt) {
         int fd = accept(listener, nullptr, nullptr);
         if (fd < 0) {
           if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-            perror("accept");
+            std::cerr << "{\"event\":\"io_error\",\"operation\":\"accept\"}\n";
           break;
         }
         if (clients.size() >= MAX_CLIENTS || !nonblock(fd)) {
@@ -586,16 +631,27 @@ int run_gateway(const GatewayOptions &opt) {
                 }
                 return out + "]";
               };
-              c.output = frame("{\"queue_wait_log2_ns\":" + hist_json(queue_hist) +
-                               ",\"service_log2_ns\":" + hist_json(service_hist) +
-                               ",\"batches\":" + std::to_string(batches.load()) +
-                               ",\"wal_syncs\":" + std::to_string(wal_syncs.load()) +
-                               ",\"queue_depth\":" + std::to_string(depth) +
-                               ",\"accepted_connections\":" + std::to_string(accepted) +
-                               ",\"processed\":" + std::to_string(processed.load()) +
-                               ",\"overload\":" + std::to_string(overload) +
-                               ",\"malformed\":" + std::to_string(malformed) +
-                               ",\"rate_limited\":" + std::to_string(rate_limited) + "}");
+              std::string histories = "[";
+              for (size_t i = 0; i < opt.shards; ++i) {
+                if (i)
+                  histories += ",";
+                histories += std::to_string(history_usage[i].load());
+              }
+              histories += "]";
+              c.output =
+                  frame("{\"history_usage\":" + histories +
+                        ",\"history_capacity\":" + std::to_string(opt.max_history) +
+                        ",\"queue_wait_log2_ns\":" + hist_json(queue_hist) +
+                        ",\"service_log2_ns\":" + hist_json(service_hist) +
+                        ",\"batches\":" + std::to_string(batches.load()) +
+                        ",\"wal_syncs\":" + std::to_string(wal_syncs.load()) +
+                        ",\"queue_depth\":" + std::to_string(depth) +
+                        ",\"queue_capacity\":" + std::to_string(opt.queue_capacity * opt.shards) +
+                        ",\"rejected_commands\":" + std::to_string(rejected_commands.load()) +
+                        ",\"accepted_connections\":" + std::to_string(accepted) +
+                        ",\"processed\":" + std::to_string(processed.load()) + ",\"overload\":" +
+                        std::to_string(overload) + ",\"malformed\":" + std::to_string(malformed) +
+                        ",\"rate_limited\":" + std::to_string(rate_limited) + "}");
             } else if (req.kind == RequestKind::Command || opt.shards == 1) {
               size_t shard = req.kind == RequestKind::Command
                                  ? hash_symbol(req.command.symbol) % opt.shards
@@ -656,6 +712,9 @@ int run_gateway(const GatewayOptions &opt) {
   sigaction(SIGTERM, &oldterm, nullptr);
   sigaction(SIGINT, &oldint, nullptr);
   sigaction(SIGPIPE, &oldpipe, nullptr);
+  std::cout << (fatal ? "{\"event\":\"stopped\",\"status\":\"error\"}"
+                      : "{\"event\":\"stopped\",\"status\":\"clean\"}")
+            << std::endl;
   return fatal ? 1 : 0;
 }
 }

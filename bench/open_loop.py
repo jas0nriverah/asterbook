@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Scheduled synthetic arrivals; records schedule-to-response and generator lag."""
-import argparse, concurrent.futures, ipaddress, json, math, os, platform, random, socket, ssl, subprocess, sys, threading, time, uuid
+
+import argparse, concurrent.futures, ipaddress, json, math, os, platform, random, socket, ssl, struct, subprocess, sys, threading, time, uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
-from client import request
+from client import request, recv_exact, MAX_RESPONSE
 from source_digest import source_digest
 
 
@@ -43,9 +44,16 @@ def main():
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--max-inflight", type=int, default=128)
     p.add_argument(
-        "--workload", choices=["add", "cancel", "cross", "deep"], default="add"
+        "--workload", choices=["add", "cancel", "cross", "deep", "mixed"], default="add"
     )
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--slow-client-ms", type=float, default=0, help="delay before reading responses"
+    )
+    p.add_argument("--max-p99-ms", type=float, default=None)
+    p.add_argument("--max-error-rate", type=float, default=None)
+    p.add_argument("--max-drop-rate", type=float, default=None)
+    p.add_argument("--min-throughput", type=float, default=None)
     p.add_argument(
         "--burst-size", type=int, default=1, help="arrivals per scheduled burst"
     )
@@ -92,6 +100,15 @@ def main():
         p.error(
             "burst-size and symbols must be positive; hot-symbol-percent must be 0..100"
         )
+    if not math.isfinite(a.slow_client_ms) or a.slow_client_ms < 0:
+        p.error("slow-client-ms must be finite and nonnegative")
+    for value in (a.max_p99_ms, a.max_error_rate, a.max_drop_rate, a.min_throughput):
+        if value is not None and (not math.isfinite(value) or value < 0):
+            p.error("SLO thresholds must be finite and nonnegative")
+    if any(
+        value is not None and value > 1 for value in (a.max_error_rate, a.max_drop_rate)
+    ):
+        p.error("error and drop rates must be between 0 and 1")
     randomizer = random.Random(a.seed)
     prices = [100 + randomizer.randrange(1000) for _ in range(a.count)]
     symbols = choose_symbols(a.count, a.symbols, a.hot_symbol_percent, randomizer)
@@ -110,18 +127,36 @@ def main():
                 local.sock.settimeout(10)
                 with lock:
                     sockets.append(local.sock)
-            side = "BUY" if a.workload in ("add", "cancel") or i % 2 else "SELL"
+            workload = (
+                ("add", "cancel", "cross")[i % 3]
+                if a.workload == "mixed"
+                else a.workload
+            )
+            side = "BUY" if workload in ("add", "cancel") or i % 2 else "SELL"
             price = (
                 99
-                if a.workload == "add"
-                else (prices[i] if a.workload == "deep" else 100)
+                if workload == "add"
+                else (
+                    prices[i]
+                    if workload == "deep"
+                    else (98 if workload == "cancel" else 100)
+                )
             )
             # Churn uses each worker's own add then cancel; RTT covers both requests.
             symbol = f"S{symbols[i]}"
             cmd = f"V1 NEW {a.principal} {namespace}r{i} {symbol} {namespace}o{i} {side} GTC {price} 1"
-            response = request(local.sock, cmd)
+            if a.slow_client_ms:
+                payload = cmd.encode("ascii")
+                local.sock.sendall(struct.pack("!I", len(payload)) + payload)
+                time.sleep(a.slow_client_ms / 1000)
+                length = struct.unpack("!I", recv_exact(local.sock, 4))[0]
+                if not 0 < length <= MAX_RESPONSE:
+                    raise ValueError("invalid response length")
+                response = json.loads(recv_exact(local.sock, length))
+            else:
+                response = request(local.sock, cmd)
             response = response.get("result", response)
-            if a.workload == "cancel" and response.get("accepted"):
+            if workload == "cancel" and response.get("accepted"):
                 response = request(
                     local.sock,
                     f"V1 CANCEL {a.principal} {namespace}c{i} {symbol} {namespace}o{i}",
@@ -257,7 +292,28 @@ def main():
         "clock": time.get_clock_info("monotonic").implementation,
         "build_flags": "server build flags must be recorded separately",
     }
+    error_rate = output["rejected_or_failed"] / a.count
+    drop_rate = dropped / a.count
+    checks = {
+        "p99": a.max_p99_ms is None
+        or (
+            output["latency_ms"]["p99"] is not None
+            and output["latency_ms"]["p99"] <= a.max_p99_ms
+        ),
+        "error_rate": a.max_error_rate is None or error_rate <= a.max_error_rate,
+        "drop_rate": a.max_drop_rate is None or drop_rate <= a.max_drop_rate,
+        "throughput": a.min_throughput is None
+        or output["achieved_completions_per_s"] >= a.min_throughput,
+    }
+    output.update(
+        error_rate=error_rate,
+        drop_rate=drop_rate,
+        slo_checks=checks,
+        slow_client_ms=a.slow_client_ms,
+    )
     print(json.dumps(output, sort_keys=True))
+    if not all(checks.values()):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

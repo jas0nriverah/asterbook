@@ -1,3 +1,3 @@
 # Optional formatting tools; not required to build or run AsterBook.
-black==25.1.0
+black==26.10.1
 clang-format==19.1.7

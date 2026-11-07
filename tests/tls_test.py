@@ -93,11 +93,13 @@ with tempfile.TemporaryDirectory() as temp:
             pass
         with connect() as s:
             assert request(s, "V1 STATE")["error"] == "FORBIDDEN"
+            assert request(s, "V1 READY")["error"] == "FORBIDDEN"
             assert (
                 request(s, "V1 NEW bob r1 X o1 BUY GTC 100 1")["error"]
                 == "IDENTITY_MISMATCH"
             )
         with connect("admin") as s:
+            assert request(s, "V1 READY")["ok"] is True
             assert "queue_depth" in request(s, "V1 METRICS")
             payload = b"V1 METRICS"
             frames = (struct.pack("!I", len(payload)) + payload) * 500
