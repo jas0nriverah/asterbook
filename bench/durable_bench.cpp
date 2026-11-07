@@ -1,17 +1,38 @@
 #include "asterbook/journal.hpp"
 #include <chrono>
 #include <cstdlib>
+#include <charconv>
+#include <string_view>
+#include <vector>
 #include <filesystem>
 #include <iostream>
 #include <unistd.h>
 using namespace asterbook;
 int main(int argc, char **argv) {
-  int n = argc > 1 ? std::atoi(argv[1]) : 1000;
-  int batch = argc > 2 ? std::atoi(argv[2]) : 1;
-  if (n < 1 || batch < 1 || batch > 1024)
+  int n = 1000, batch = 1;
+  auto parse = [](const char *value, int &out) {
+    std::string_view text(value);
+    auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), out);
+    return error == std::errc{} && end == text.data() + text.size();
+  };
+  if (argc > 3 || (argc > 1 && !parse(argv[1], n)) || (argc > 2 && !parse(argv[2], batch)) ||
+      n < 1 || n > 1000000 || batch < 1 || batch > 1024) {
+    std::cerr << "usage: durable_bench [count:1..1000000] [batch:1..1024]\n";
     return 2;
-  auto path = (std::filesystem::temp_directory_path() / ("asterbench-" + std::to_string(getpid())))
-                  .string();
+  }
+  auto pattern = (std::filesystem::temp_directory_path() / "asterbench-XXXXXX").string();
+  std::vector<char> temp(pattern.begin(), pattern.end());
+  temp.push_back(0);
+  if (!mkdtemp(temp.data()))
+    return 1;
+  struct Cleanup {
+    std::filesystem::path directory;
+    ~Cleanup() {
+      std::error_code error;
+      std::filesystem::remove_all(directory, error);
+    }
+  } cleanup{temp.data()};
+  auto path = (cleanup.directory / "journal").string();
   Engine oracle(n + 10, n + 10);
   std::vector<Command> commands;
   for (int i = 0; i < n; ++i) {
@@ -44,5 +65,4 @@ int main(int argc, char **argv) {
     if (recovered.state() != oracle.state())
       return 1;
   }
-  std::filesystem::remove(path);
 }
