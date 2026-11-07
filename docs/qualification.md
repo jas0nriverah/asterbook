@@ -30,6 +30,8 @@ slots by limiting data clients to 120. It records actual connections and uses
 TCP_NODELAY for interactive frames; the gateway also uses TCP_NODELAY so TLS
 handshake/session-ticket traffic does not delay the first short reply.
 
+The resource guard stops a run below 10 GiB of free disk; use `--min-free-disk-bytes` for an explicit deployment-specific floor. CI uses 16 MiB for its small disposable fixture.
+
 Default experiment gates are p99 scheduled-to-response latency at most 10 ms,
 at least 99.9% correct responses within 50 ms, at least 99% of offered accepted
 throughput, zero execution errors or generator drops, and recovery within 30 s.

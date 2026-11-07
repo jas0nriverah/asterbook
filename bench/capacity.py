@@ -201,6 +201,7 @@ def parse_args(argv=None):
     p.add_argument('--shards',type=int,default=16)
     p.add_argument('--history',type=int,default=1000000)
     p.add_argument('--queue',type=int,default=256)
+    p.add_argument('--min-free-disk-bytes',type=int,default=10*1024**3)
     p.add_argument('--profile',choices=['mixed','ioc'],default='mixed')
     p.add_argument('--hot',action='store_true')
     p.add_argument('--probe-seconds',type=float,default=5)
@@ -219,6 +220,7 @@ def parse_args(argv=None):
     if (not math.isfinite(a.rate) or a.rate<=0 or a.seconds<1 or not 1<=a.clients<=120 or not 1<=a.shards<=16
         or not 1<=a.history<=1000000 or not 1<=a.queue<=65536):
         p.error('invalid rate, duration, clients, shard, history or queue bound')
+    if a.min_free_disk_bytes<1:p.error('min-free-disk-bytes must be positive')
     if int(a.rate*a.seconds)<1:p.error('at least one scheduled command is required')
     if any(not math.isfinite(v) or v<=0 for v in (a.probe_seconds,a.max_lag_ms,a.timeout,a.start_delay,a.p99_ms,a.good_ms)):
         p.error('timing values must be positive and finite')
@@ -308,7 +310,7 @@ def main(argv=None):
             row['disk_available_bytes']=os.statvfs(data).f_bavail*os.statvfs(data).f_frsize
             observed.append(row)
             with (out/'resources.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')
-            if row['max_history_fraction']>=.8 or row['memory']['VmRSS']>=16*1024**3 or row['disk_available_bytes']<10*1024**3:
+            if row['max_history_fraction']>=.8 or row['memory']['VmRSS']>=16*1024**3 or row['disk_available_bytes']<a.min_free_disk_bytes:
                 stop.set();monitor_errors.append('resource guardrail breached')
         def monitor():
             next_sample=time.monotonic()

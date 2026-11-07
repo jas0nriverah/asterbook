@@ -32,11 +32,12 @@ with tempfile.TemporaryDirectory() as temp:
     subprocess.run([sys.executable,str(root/'tools/dev_certs.py'),str(certs)],check=True,stdout=subprocess.DEVNULL)
     command=[sys.executable,str(root/'bench/capacity.py'),'--server',str(binary),
              '--data-dir',str(base/'data'),'--output',str(base/'output'),'--cert-dir',str(certs),
-             '--rate','40','--seconds','1','--clients','2','--shards','2','--start-delay','2']
+             '--rate','40','--seconds','1','--clients','2','--shards','2','--start-delay','2','--max-lag-ms','10000',
+             '--min-free-disk-bytes',str(16*1024**2)]
     result=subprocess.run(command,capture_output=True,text=True,timeout=45)
     assert result.returncode in (0,1),(result.stdout,result.stderr)
     summary=json.loads((base/'output/summary.json').read_text())
-    assert summary['scheduled']==summary['accepted']==40
+    assert summary['scheduled']==summary['accepted']==40,summary
     assert summary['connections']==2
     assert summary['duplicate_samples']>=16
     # Shared CI runners verify behavior, not capacity or latency targets.
