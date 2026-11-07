@@ -1,5 +1,9 @@
 # Development
 
+The capacity and SLI tools are described in [experimental qualification](qualification.md).
+CTest includes their functional and analyzer regressions. Prometheus rule
+behavior is checked with promtool test rules tests/alerts.test.yml.
+
 `./scripts/setup.sh` builds the release preset, runs tests and runs the secure demonstration. It can install CMake and Ninja in `.venv` and build OpenSSL in `.deps/` when needed; these steps require network access. Linux and macOS are supported development targets. On Ubuntu, install dependencies with:
 
 ```sh

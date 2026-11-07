@@ -78,7 +78,7 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
         d / "ca.crt",
     )
 
-    def issue(name, role="client", expired=False):
+    def issue(name, role="client", expired=False, future=False):
         openssl(
             "req",
             "-new",
@@ -93,11 +93,11 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
             d / (name + ".csr"),
         )
         (d / (name + ".key")).chmod(0o600)
-        dates = (
-            ["-startdate", "20200101000000Z", "-enddate", "20200102000000Z"]
-            if expired
-            else []
-        )
+        dates = []
+        if expired:
+            dates = ["-startdate", "20200101000000Z", "-enddate", "20200102000000Z"]
+        elif future:
+            dates = ["-startdate", "20400101000000Z", "-enddate", "20400102000000Z"]
         openssl(
             "ca",
             "-batch",
@@ -120,7 +120,10 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
         ("expired", "client", True),
     ]:
         issue(name, role, expired)
-    (d / "admins").write_text("admin\nexpired\n")
+    issue("admin2")
+    issue("server_expired", "server", expired=True)
+    issue("server_future", "server", future=True)
+    (d / "admins").write_text("admin\nadmin2\nexpired\n")
 
     def crl():
         openssl("ca", "-config", conf, "-gencrl", "-out", d / "clients.crl")
@@ -201,9 +204,44 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
     try:
         refused("admin")
         refused("expired")
+        with connect("admin2") as sock:
+            assert sock.getpeercert(binary_form=True) == ssl.PEM_cert_to_DER_cert(
+                (d / "server2.crt").read_text()
+            )
+            assert request(sock, "V1 READY")["ok"]
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+    # A server leaf outside its validity period must fail configuration and startup.
+    conf_file = d / "server.conf"
+    def write_config(server):
+        conf_file.write_text(
+            "\n".join(
+                [
+                    f"data-dir={d}/data",
+                    f"tls-cert={d}/{server}.crt",
+                    f"tls-key={d}/{server}.key",
+                    f"tls-ca={d}/ca.crt",
+                    f"tls-crl={d}/clients.crl",
+                    f"admin-policy={d}/admins",
+                ]
+            ) + "\n"
+        )
+
+    write_config("server2")
+    assert subprocess.run([binary, "validate-config", str(conf_file)], capture_output=True).returncode == 0
+    for server in ("server_expired", "server_future"):
+        write_config(server)
+        check = subprocess.run([binary, "validate-config", str(conf_file)], capture_output=True)
+        assert check.returncode != 0, (server, check.stdout, check.stderr)
+        started = subprocess.Popen(args(server), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            out, err = started.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            started.kill()
+            started.communicate()
+            raise AssertionError(f"{server} started with an invalid certificate")
+        assert started.returncode != 0, (server, out, err)
     # An expired CRL must fail validation before listening.
     openssl(
         "ca",
@@ -217,20 +255,7 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
         "-out",
         d / "clients.crl",
     )
-    conf_file = d / "server.conf"
-    conf_file.write_text(
-        "\n".join(
-            [
-                f"data-dir={d}/data",
-                f"tls-cert={d}/server2.crt",
-                f"tls-key={d}/server2.key",
-                f"tls-ca={d}/ca.crt",
-                f"tls-crl={d}/clients.crl",
-                f"admin-policy={d}/admins",
-            ]
-        )
-        + "\n"
-    )
+    write_config("server2")
     assert (
         subprocess.run(
             [binary, "validate-config", str(conf_file)], capture_output=True

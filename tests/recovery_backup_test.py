@@ -1,4 +1,4 @@
-import json, os, shutil, signal, socket, struct, subprocess, sys, tempfile, time
+import fcntl, json, os, shutil, signal, socket, struct, subprocess, sys, tempfile, time
 from pathlib import Path
 
 binary, verifier = sys.argv[1:3]
@@ -118,7 +118,58 @@ with tempfile.TemporaryDirectory() as td:
     assert request(s, "V1 NEW c r2 XYZ b BUY GTC 99 2")["accepted"]
     call("backup", "--data-dir", data, "--root", backups, ok=False)
     stop(p, s)
-    b = Path(call("backup", "--data-dir", data, "--root", backups))
+    # Crash after a copy starts, leaving a marked partial staging directory.
+    injected = """import os, runpy, sys
+path = sys.argv.pop(1)
+ns = runpy.run_path(path, run_name='backup_fault')
+g = ns['backup_locked'].__globals__
+copy = g['copy_sync']
+def interrupt(*args):
+    copy(*args)
+    os._exit(77)
+g['copy_sync'] = interrupt
+sys.exit(ns['main']())
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", injected, str(script), "backup", "--data-dir", str(data),
+         "--root", str(backups), "--verifier", verifier],
+        capture_output=True,
+    )
+    assert crashed.returncode == 77
+    staging = list(backups.glob(".incomplete-*"))
+    assert len(staging) == 1
+    assert (staging[0] / ".asterbook-backup-staging").is_file()
+    assert (staging[0] / "payload" / "manifest").is_file()
+    # Names alone, and symlinked markers or staging entries, never authorize deletion.
+    unknown = backups / ".incomplete-abcdefgh"
+    unknown.mkdir()
+    (unknown / "keep").write_text("keep")
+    (staging[0] / "external-link").symlink_to(unknown, target_is_directory=True)
+    linked_marker = backups / ".incomplete-ijklmnop"
+    linked_marker.mkdir()
+    (linked_marker / ".asterbook-backup-staging").symlink_to(
+        staging[0] / ".asterbook-backup-staging"
+    )
+    linked_dir = backups / ".incomplete-qrstuvwx"
+    linked_dir.symlink_to(unknown, target_is_directory=True)
+    root_fd = os.open(backups, os.O_RDONLY)
+    fcntl.flock(root_fd, fcntl.LOCK_EX)
+    waiting = subprocess.Popen(
+        [sys.executable, str(script), "backup", "--data-dir", str(data), "--root",
+         str(backups), "--verifier", verifier], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        time.sleep(0.2)
+        assert waiting.poll() is None and staging[0].exists()
+    finally:
+        os.close(root_fd)
+    out, err = waiting.communicate(timeout=10)
+    assert waiting.returncode == 0, (out, err)
+    b = Path(out.strip())
+    assert not staging[0].exists()
+    assert (unknown / "keep").read_text() == "keep"
+    assert linked_marker.is_dir() and linked_dir.is_symlink()
     restored = root / "restored"
     report = json.loads(call("restore", "--backup", b, "--destination", restored))
     assert report["duration_s"] >= 0 and "journal" in report["sha256"]

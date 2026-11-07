@@ -2,6 +2,7 @@
 """Exercise the HTTP exporter against a real sharded TLS gateway."""
 
 import socket
+import re
 import ssl
 import subprocess
 import sys
@@ -14,8 +15,30 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tools"))
 from client import request
+import monitor
 
 binary = sys.argv[1]
+
+
+def assert_metadata(body):
+    samples = {line.split("{", 1)[0].split(" ", 1)[0] for line in body.splitlines()
+               if line and not line.startswith("#")}
+    for family in samples:
+        assert len(re.findall(r"^# HELP " + re.escape(family) + r" .+", body, re.M)) == 1
+        assert len(re.findall(r"^# TYPE " + re.escape(family) + r" (counter|gauge)$", body, re.M)) == 1
+
+
+# Assert the original nanosecond-bin values survive the Prometheus rename.
+fixture = {name: 0 for name in monitor.COUNTERS}
+fixture.update(queue_depth=0, queue_capacity=1, history_usage=[0], history_capacity=1,
+               queue_wait_log2_ns=list(range(32)), service_log2_ns=list(reversed(range(32))))
+converted = monitor.metrics(fixture)
+assert_metadata(converted)
+for i in range(32):
+    assert f'asterbook_queue_wait_log2_bin_total{{log2_ns="{i}"}} {i}\n' in converted
+    assert f'asterbook_service_log2_bin_total{{log2_ns="{i}"}} {31-i}\n' in converted
+assert 'asterbook_queue_wait_log2_ns_bin_total' not in converted
+assert 'asterbook_service_log2_ns_bin_total' not in converted
 
 
 def free_port():
@@ -110,10 +133,11 @@ with tempfile.TemporaryDirectory() as temp:
         else:
             raise AssertionError("exporter did not start")
         body = urllib.request.urlopen(base + "/metrics", timeout=2).read().decode()
+        assert_metadata(body)
         assert "asterbook_up 1\n" in body
         assert "asterbook_queue_capacity 8\n" in body
         assert "asterbook_rejected_commands_total 1\n" in body
-        assert 'asterbook_service_log2_ns_bin_total{log2_ns="0"}' in body
+        assert 'asterbook_service_log2_bin_total{log2_ns="0"}' in body
         assert "asterbook_disk_available_bytes " in body
         assert 'asterbook_history_capacity{shard="0"} 1000000\n' in body
         assert (
@@ -163,7 +187,9 @@ with tempfile.TemporaryDirectory() as temp:
             urllib.request.urlopen(base + "/metrics", timeout=3)
             raise AssertionError("dead upstream reported healthy")
         except urllib.error.HTTPError as exc:
-            assert exc.code == 503 and b"asterbook_up 0" in exc.read()
+            failed = exc.read().decode()
+            assert exc.code == 503 and "asterbook_up 0" in failed
+            assert_metadata(failed)
     finally:
         if exporter:
             exporter.terminate()

@@ -1,5 +1,8 @@
 # Measurement
 
+For bounded-book command-rate qualification, raw SLI analysis and the finite
+retained-history horizon, see [experimental qualification](qualification.md).
+
 Use a release build on an otherwise idle machine. These are synthetic experiments, not exchange or production guarantees. Keep the raw JSON from each run, record the exact commit, compiler/version and flags, OS/kernel, CPU, RAM, power policy, affinity and background load. Repeat runs and preserve outliers; do not compare macOS laptop results to bare-metal Linux as if they were equivalent.
 
 `build/release/core_bench 10000 add` measures `Engine::execute` with a monotonic clock around each command, including matching, deduplication, allocations, event construction and clock overhead, excluding parsing, network and journal. Workloads: `add` grows a resting book and request history, `cancel` preloads then removes resting orders, `cross` consumes one resting order per incoming order, and `deep` uses many price levels. Initialization is excluded. This is an instrumented per-command distribution, not a calibrated microbenchmark; timing overhead can dominate small operations. Run several sizes to expose history or book-size scaling. No warmup is performed; report that and all sample counts.

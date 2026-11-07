@@ -4,6 +4,7 @@
 #include "asterbook/queue.hpp"
 #include "asterbook/tls.hpp"
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <memory>
@@ -483,6 +484,14 @@ int run_gateway(const GatewayOptions &opt) {
         }
         if (clients.size() >= MAX_CLIENTS || !nonblock(fd)) {
           ++overload;
+          close(fd);
+          continue;
+        }
+        // Short request/reply frames must not wait behind unacknowledged TLS
+        // handshake or session-ticket records in Nagle's algorithm.
+        int no_delay = 1;
+        if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay)) != 0) {
+          std::cerr << "{\"event\":\"io_error\",\"operation\":\"tcp_nodelay\"}\n";
           close(fd);
           continue;
         }

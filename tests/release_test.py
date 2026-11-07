@@ -2,6 +2,7 @@ import hashlib
 import os
 from pathlib import Path
 import platform
+import stat
 import subprocess
 import sys
 import tempfile
@@ -62,11 +63,43 @@ with tempfile.TemporaryDirectory() as tmp:
     def checksum(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    def mode(path):
+        return stat.S_IMODE(path.stat().st_mode)
+
+    def check_release_modes(install_root, version):
+        release = install_root / "releases" / version
+        assert all(mode(p) == 0o755 for p in (release, release / "bin", release / "tools"))
+        assert all(mode(release / "bin" / n) == 0o755 for n in
+                   ("asterbook", "asterbook_itch", "recovery_verify"))
+        assert all(mode(release / "tools" / n) == 0o644 for n in ("monitor.py", "recovery.py"))
+        assert mode(release / "manifest.json") == 0o644
+
     one = package("1.0")
     two = package("2.0")
     assert install(one, "0" * 64, False).returncode != 0
     install(one, checksum(one))
     assert os.readlink(root / "current") == "releases/1.0"
+    assert mode(root) == 0o755 and mode(root / "releases") == 0o755
+    check_release_modes(root, "1.0")
+    # Even a restrictive installer umask must permit a service account to read
+    # a newly created installation, while respecting existing directory policy.
+    restricted = base / "restricted-umask"
+    preserved = base / "preserved"
+    preserved.mkdir(mode=0o700)
+    (preserved / "releases").mkdir(mode=0o700)
+    for destination in (restricted, preserved):
+        code = (
+            "import platform,runpy; platform.system=lambda:'Linux'; runpy.run_path(%r,run_name='__main__')"
+            % str(repo / "scripts/release.py")
+        )
+        subprocess.run(
+            [sys.executable, "-c", code, "--root", str(destination), "install", str(one),
+             "--sha256", checksum(one)], check=True, capture_output=True,
+            preexec_fn=lambda: os.umask(0o077),
+        )
+        check_release_modes(destination, "1.0")
+    assert mode(restricted) == mode(restricted / "releases") == 0o755
+    assert mode(preserved) == mode(preserved / "releases") == 0o700
     assert install(one, checksum(one), False).returncode != 0
     install(two, checksum(two))
     assert os.readlink(root / "previous") == "releases/1.0"

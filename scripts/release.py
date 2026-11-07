@@ -31,7 +31,13 @@ if root == Path("/"):
     p.error("root cannot be /")
 if platform.system() != "Linux":
     p.error("release installation requires Linux")
-root.mkdir(parents=True, exist_ok=True)
+try:
+    root.mkdir(parents=True)
+except FileExistsError:
+    if not root.is_dir():
+        raise
+else:
+    root.chmod(0o755)
 lock_fd = os.open(root / ".release.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
 fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
@@ -47,7 +53,13 @@ def sync_dir(path):
 releases = root / "releases"
 if releases.is_symlink():
     p.error("releases cannot be a symlink")
-releases.mkdir(exist_ok=True)
+try:
+    releases.mkdir()
+except FileExistsError:
+    if not releases.is_dir():
+        raise
+else:
+    releases.chmod(0o755)
 
 
 def target(link):
@@ -189,6 +201,10 @@ try:
                     f.flush()
                     os.fchmod(f.fileno(), 0o755 if name.startswith("bin/") else 0o644)
                     os.fsync(f.fileno())
+            # TemporaryDirectory starts private. Publish readable/traversable
+            # directories regardless of the installer's umask.
+            for directory in (stage, stage / "bin", stage / "tools"):
+                directory.chmod(0o755)
             sync_dir(stage / "bin")
             sync_dir(stage / "tools")
             sync_dir(stage)

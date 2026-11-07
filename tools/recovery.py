@@ -17,6 +17,8 @@ import time
 import uuid
 
 MARKER = ".asterbook-backup-root"
+STAGING_MARKER = ".asterbook-backup-staging"
+STAGING_CONTENT = "asterbook backup staging v1\n"
 
 
 def syncdir(path):
@@ -25,6 +27,19 @@ def syncdir(path):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def remove_staging(path):
+    # Keep the ownership marker until the potentially large payload is gone.
+    for child in path.iterdir():
+        if child.name == STAGING_MARKER:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    (path / STAGING_MARKER).unlink(missing_ok=True)
+    path.rmdir()
 
 
 def regular(path):
@@ -181,6 +196,22 @@ def backup_locked(a):
     regular(marker)
     if marker.read_text() != "asterbook backup root v1\n":
         raise ValueError("invalid backup root marker")
+    # The root lock excludes another backup. Only remove staging directories
+    # bearing our marker; unmarked or symlinked entries may belong to others.
+    for entry in root.iterdir():
+        if not re.fullmatch(r"\.incomplete-[a-z0-9_]{8}", entry.name):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        ownership = entry / STAGING_MARKER
+        try:
+            with open_regular(ownership) as f:
+                owned = f.read(128) == STAGING_CONTENT.encode()
+        except (OSError, ValueError):
+            owned = False
+        if owned:
+            remove_staging(entry)
+            syncdir(root)
     regular(source / "service.lock")
     with open_regular(source / "service.lock") as service:
         fcntl.flock(service, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -192,8 +223,15 @@ def backup_locked(a):
                     f = open_regular(source / name)
                     locks.append(f)
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            tmp = Path(tempfile.mkdtemp(prefix=".incomplete-", dir=root))
+            staging = Path(tempfile.mkdtemp(prefix=".incomplete-", dir=root))
             try:
+                with open(staging / STAGING_MARKER, "x") as f:
+                    f.write(STAGING_CONTENT)
+                    f.flush()
+                    os.fsync(f.fileno())
+                syncdir(staging)
+                tmp = staging / "payload"
+                tmp.mkdir()
                 for name in names:
                     (tmp / name).parent.mkdir(parents=True, exist_ok=True)
                     copy_sync(source / name, tmp / name)
@@ -218,8 +256,8 @@ def backup_locked(a):
                 publish(tmp, dest)
                 syncdir(root)
             finally:
-                if tmp.exists():
-                    shutil.rmtree(tmp)
+                if staging.exists():
+                    remove_staging(staging)
         finally:
             for f in locks:
                 f.close()
