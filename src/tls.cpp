@@ -27,6 +27,11 @@ TlsContext make_tls_context(const std::string &cert, const std::string &key, con
       SSL_CTX_check_private_key(ctx.get()) != 1 ||
       SSL_CTX_load_verify_locations(ctx.get(), ca.c_str(), nullptr) != 1)
     throw std::runtime_error("invalid TLS certificate, key, or client CA");
+  X509 *leaf = SSL_CTX_get0_certificate(ctx.get());
+  if (!leaf || !X509_get0_notBefore(leaf) || !X509_get0_notAfter(leaf) ||
+      X509_cmp_current_time(X509_get0_notBefore(leaf)) >= 0 ||
+      X509_cmp_current_time(X509_get0_notAfter(leaf)) <= 0)
+    throw std::runtime_error("server TLS certificate is expired, not yet valid, or invalid");
   if (!crl.empty()) {
     // Fail closed before listening if the configured CRL is stale or untrusted.
     FILE *cf = fopen(ca.c_str(), "r"), *rf = fopen(crl.c_str(), "r");

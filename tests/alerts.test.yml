@@ -1,0 +1,187 @@
+rule_files:
+  - ../deploy/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: asterbook alerts fire for sustained failures and saturation
+    interval: 1m
+    input_series:
+      - series: 'up{job="asterbook",instance="127.0.0.1:9108"}'
+        values: '1 1 1 1 1 1 1 1 1'
+      - series: 'asterbook_disk_available_bytes{instance="local"}'
+        values: '1000000000 1000000000 1000000000 1000000000 1000000000 1000000000 1000000000 1000000000'
+      - series: 'asterbook_overload_total{instance="local"}'
+        values: '0 1 1 1 1 1 1 1 1'
+      - series: 'asterbook_queue_depth{instance="local"}'
+        values: '81 81 81 81 81 81 81 81'
+      - series: 'asterbook_queue_capacity{instance="local"}'
+        values: '100 100 100 100 100 100 100 100'
+      - series: 'asterbook_rejected_commands_total{instance="local"}'
+        values: '0 1 1 1 1 1 1 1 1'
+      - series: 'asterbook_rate_limited_total{instance="local"}'
+        values: '0 1 1 1 1 1 1 1 1'
+      - series: 'asterbook_service_log2_bin_total{instance="local",log2_ns="24"}'
+        values: '0 2 4 6 8 10 12 14 16'
+      - series: 'asterbook_service_log2_bin_total{instance="local",log2_ns="4"}'
+        values: '0 98 196 294 392 490 588 686 784'
+      - series: 'asterbook_history_usage{instance="local",shard="0"}'
+        values: '80 80 80 80 80 80 80 80 80'
+      - series: 'asterbook_history_capacity{instance="local",shard="0"}'
+        values: '100 100 100 100 100 100 100 100 100'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: AsterBookLowDisk
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook data filesystem has less than 1 GiB available
+      - eval_time: 4m
+        alertname: AsterBookOverload
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook has rejected overloaded requests
+      - eval_time: 7m
+        alertname: AsterBookQueueNearCapacity
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook aggregate queue is over 80% full
+      - eval_time: 4m
+        alertname: AsterBookBusinessRejections
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook is rejecting business commands
+      - eval_time: 4m
+        alertname: AsterBookRateLimited
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook is rate limiting requests
+      - eval_time: 7m
+        alertname: AsterBookServiceLatencyTail
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: Over 1% of service times are at least about 16.8 ms
+      - eval_time: 7m
+        alertname: AsterBookHistoryNearCapacity
+        exp_alerts:
+          - exp_labels: {instance: local, shard: "0", severity: warning}
+            exp_annotations:
+              summary: AsterBook shard history is at least 80% full
+
+  - name: exporter down and missing target are distinct
+    interval: 1m
+    input_series:
+      - series: 'up{job="asterbook",instance="127.0.0.1:9108"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AsterBookExporterUnavailable
+        exp_alerts:
+          - exp_labels: {job: asterbook, instance: "127.0.0.1:9108", severity: critical}
+            exp_annotations:
+              summary: AsterBook exporter or authenticated upstream is unavailable
+      - eval_time: 4m
+        alertname: AsterBookScrapeTargetMissing
+        exp_alerts: []
+
+  - name: no AsterBook target must alert after its hold period
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AsterBookExporterUnavailable
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: AsterBookScrapeTargetMissing
+        exp_alerts:
+          - exp_labels: {job: asterbook, severity: critical}
+            exp_annotations:
+              summary: No Prometheus scrape target exists for AsterBook
+
+  - name: exact warning thresholds do not fire
+    interval: 1m
+    input_series:
+      - series: 'up{job="asterbook",instance="127.0.0.1:9108"}'
+        values: '1 1 1 1 1 1 1 1'
+      - series: 'asterbook_disk_available_bytes{instance="local"}'
+        values: '1073741824 1073741824 1073741824 1073741824 1073741824 1073741824 1073741824 1073741824'
+      - series: 'asterbook_overload_total{instance="local"}'
+        values: '0 0 0 0 0 0 0 0'
+      - series: 'asterbook_queue_depth{instance="local"}'
+        values: '80 80 80 80 80 80 80 80'
+      - series: 'asterbook_queue_capacity{instance="local"}'
+        values: '100 100 100 100 100 100 100 100'
+      - series: 'asterbook_rejected_commands_total{instance="local"}'
+        values: '0 0 0 0 0 0 0 0'
+      - series: 'asterbook_rate_limited_total{instance="local"}'
+        values: '0 0 0 0 0 0 0 0'
+      - series: 'asterbook_service_log2_bin_total{instance="local",log2_ns="24"}'
+        values: '0 1 2 3 4 5 6 7'
+      - series: 'asterbook_service_log2_bin_total{instance="local",log2_ns="4"}'
+        values: '0 99 198 297 396 495 594 693'
+      - series: 'asterbook_history_usage{instance="local",shard="0"}'
+        values: '79 79 79 79 79 79 79 79'
+      - series: 'asterbook_history_capacity{instance="local",shard="0"}'
+        values: '100 100 100 100 100 100 100 100'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: AsterBookExporterUnavailable
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookLowDisk
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookOverload
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookQueueNearCapacity
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookBusinessRejections
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookRateLimited
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookServiceLatencyTail
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: AsterBookHistoryNearCapacity
+        exp_alerts: []
+
+  - name: overload alert handles counter reset
+    interval: 1m
+    input_series:
+      - series: 'asterbook_overload_total{instance="local"}'
+        values: '5 9 0 1 2 3 4 5'
+      - series: 'asterbook_rejected_commands_total{instance="local"}'
+        values: '5 9 0 1 2 3 4 5'
+      - series: 'asterbook_rate_limited_total{instance="local"}'
+        values: '5 9 0 1 2 3 4 5'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AsterBookOverload
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook has rejected overloaded requests
+      - eval_time: 4m
+        alertname: AsterBookBusinessRejections
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook is rejecting business commands
+      - eval_time: 4m
+        alertname: AsterBookRateLimited
+        exp_alerts:
+          - exp_labels: {instance: local, severity: warning}
+            exp_annotations:
+              summary: AsterBook is rate limiting requests

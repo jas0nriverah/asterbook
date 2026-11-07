@@ -7,6 +7,12 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: AsterBook exporter or authenticated upstream is unavailable
+      - alert: AsterBookScrapeTargetMissing
+        expr: absent(up{job="asterbook"})
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: No Prometheus scrape target exists for AsterBook
       - alert: AsterBookLowDisk
         expr: asterbook_disk_available_bytes < 1073741824
         for: 5m
@@ -36,8 +42,8 @@ groups:
         annotations: {summary: AsterBook is rate limiting requests}
       - alert: AsterBookServiceLatencyTail
         expr: |
-          sum by (instance) (rate(asterbook_service_log2_ns_bin_total{log2_ns=~"2[4-9]|3[01]"}[5m]))
-          / clamp_min(sum by (instance) (rate(asterbook_service_log2_ns_bin_total[5m])), 0.001) > 0.01
+          sum by (instance) (rate(asterbook_service_log2_bin_total{log2_ns=~"2[4-9]|3[01]"}[5m]))
+          / clamp_min(sum by (instance) (rate(asterbook_service_log2_bin_total[5m])), 0.001) > 0.01
         for: 5m
         labels: {severity: warning}
         annotations: {summary: Over 1% of service times are at least about 16.8 ms}

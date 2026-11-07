@@ -1,6 +1,10 @@
 # Development
 
-`./scripts/setup.sh` builds the release preset, runs tests and runs the secure demonstration. It can install CMake and Ninja in `.venv` and build OpenSSL in `.deps/` when needed; these steps require network access. Linux and macOS are supported development targets. On Ubuntu, install dependencies with:
+The capacity and SLI tools are described in [experimental qualification](qualification.md).
+CTest includes their functional and analyzer regressions. Prometheus rule
+behavior is checked with promtool test rules tests/alerts.test.yml.
+
+`./start.sh` checks dependencies, builds the release preset, runs tests and runs the secure demonstration. Missing dependencies produce installation commands; the script does not install packages automatically. Use `./start.sh --check` for dependency and configuration checks only. Linux and macOS are supported development targets. On Ubuntu, install dependencies with:
 
 ```sh
 sudo apt-get update

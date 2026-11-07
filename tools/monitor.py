@@ -23,6 +23,17 @@ COUNTERS = (
     "rate_limited",
 )
 HISTOGRAMS = ("queue_wait_log2_ns", "service_log2_ns")
+COUNTER_HELP = {
+    "batches": "Command batches processed by shard workers.",
+    "wal_syncs": "Successful journal synchronization operations.",
+    "rejected_commands": "Business commands rejected by shard workers.",
+    "accepted_connections": "Client connections accepted by the gateway.",
+    "processed": "Work items processed by shard workers.",
+    "overload": "Gateway connection and shard queue overload events.",
+    "malformed": "Malformed requests received by the gateway.",
+    "rate_limited": "Requests rejected by the per-connection rate limit.",
+}
+UP_HELP = "Whether upstream metrics and data filesystem availability were collected successfully."
 
 
 def upstream(args, command):
@@ -79,6 +90,7 @@ def metrics(data):
             raise ValueError("invalid counter")
         lines.extend(
             (
+                f"# HELP asterbook_{name}_total {COUNTER_HELP[name]}",
                 f"# TYPE asterbook_{name}_total counter",
                 f"asterbook_{name}_total {value}",
             )
@@ -87,13 +99,15 @@ def metrics(data):
     if type(depth) is not int or depth < 0:
         raise ValueError("invalid queue depth")
     lines.extend(
-        ("# TYPE asterbook_queue_depth gauge", f"asterbook_queue_depth {depth}")
+        ("# HELP asterbook_queue_depth Total number of queued work items.",
+         "# TYPE asterbook_queue_depth gauge", f"asterbook_queue_depth {depth}")
     )
     capacity = data["queue_capacity"]
     if type(capacity) is not int or capacity <= 0:
         raise ValueError("invalid queue capacity")
     lines.extend(
         (
+            "# HELP asterbook_queue_capacity Total capacity of shard work queues.",
             "# TYPE asterbook_queue_capacity gauge",
             f"asterbook_queue_capacity {capacity}",
         )
@@ -109,7 +123,9 @@ def metrics(data):
         raise ValueError("invalid history capacity")
     lines.extend(
         (
+            "# HELP asterbook_history_usage Retained request history entries per shard.",
             "# TYPE asterbook_history_usage gauge",
+            "# HELP asterbook_history_capacity Maximum retained request history entries per shard.",
             "# TYPE asterbook_history_capacity gauge",
         )
     )
@@ -128,12 +144,15 @@ def metrics(data):
             raise ValueError("invalid histogram")
         # The gateway reports non-cumulative log2 bins, with no sum. Expose the
         # actual bins as counters rather than inventing a Prometheus histogram sum.
-        lines.append(f"# TYPE asterbook_{name}_bin_total counter")
+        family = f"asterbook_{name.removesuffix('_ns')}_bin_total"
+        description = "Queue wait" if name.startswith("queue_wait") else "Service time"
+        lines.append(f"# HELP {family} {description} observations per log2 nanosecond bin.")
+        lines.append(f"# TYPE {family} counter")
         lines.extend(
-            f'asterbook_{name}_bin_total{{log2_ns="{i}"}} {v}'
+            f'{family}{{log2_ns="{i}"}} {v}'
             for i, v in enumerate(values)
         )
-    lines.extend(("# TYPE asterbook_up gauge", "asterbook_up 1"))
+    lines.extend((f"# HELP asterbook_up {UP_HELP}", "# TYPE asterbook_up gauge", "asterbook_up 1"))
     return "\n".join(lines) + "\n"
 
 
@@ -202,13 +221,14 @@ def handler(args):
                         status, body = 200, metrics(value)
                         disk = os.statvfs(args.data_dir)
                         body += (
+                            "# HELP asterbook_disk_available_bytes Bytes available to unprivileged users on the data filesystem.\n"
                             "# TYPE asterbook_disk_available_bytes gauge\nasterbook_disk_available_bytes "
                             + str(disk.f_bavail * disk.f_frsize)
                             + "\n"
                         )
                 except (OSError, ValueError, KeyError, TypeError, EOFError):
                     status, body = 503, (
-                        "# TYPE asterbook_up gauge\nasterbook_up 0\n"
+                        f"# HELP asterbook_up {UP_HELP}\n# TYPE asterbook_up gauge\nasterbook_up 0\n"
                         if self.path == "/metrics"
                         else "not ready\n"
                     )
