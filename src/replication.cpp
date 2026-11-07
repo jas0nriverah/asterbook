@@ -95,7 +95,8 @@ std::string Replica::request(const std::string &payload) const {
       throw std::runtime_error("replica connect failed");
   }
   std::unique_ptr<SSL, decltype(&SSL_free)> ssl(SSL_new(context_.get()), SSL_free);
-  if (!ssl || SSL_set_fd(ssl.get(), fd) != 1 || SSL_set1_host(ssl.get(), name_.c_str()) != 1 ||
+  if (!ssl || SSL_set_fd(ssl.get(), fd) != 1 ||
+      X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl.get()), name_.c_str(), name_.size()) != 1 ||
       SSL_set_tlsext_host_name(ssl.get(), name_.c_str()) != 1)
     throw std::runtime_error("replica TLS setup failed");
   auto retry = [&](int rc) {
