@@ -9,7 +9,7 @@ jobs:
   static-analysis:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sudo apt-get update && sudo apt-get install -y cppcheck prometheus
       - run: promtool check rules deploy/alerts.yml
       - run: cppcheck --error-exitcode=1 --enable=warning,performance,portability --std=c++20 --inline-suppr -I include src tools/itch_main.cpp
@@ -19,5 +19,5 @@ jobs:
     if: github.event_name == 'pull_request' && (github.event.repository.private == false || vars.ENABLE_DEPENDENCY_REVIEW == 'true')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@5895b2c9be147bc7f1c75ce72c5cb577febb1907 # v4
