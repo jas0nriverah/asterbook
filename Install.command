@@ -1,6 +1,6 @@
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
-./scripts/setup.sh
+./start.sh
 status=$?
 echo
 if [ "$status" -ne 0 ]; then echo "Setup failed ($status). See messages above."; fi

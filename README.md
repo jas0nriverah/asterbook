@@ -13,13 +13,15 @@ AsterBook is a C++20 matching engine for simulated exchanges. It matches orders 
 
 ## Quick start
 
-Install a C++20 compiler and Python 3, then run:
+Clone the repository and run:
 
 ```sh
-./scripts/setup.sh
+git clone https://github.com/jas0nriverah/asterbook.git
+cd asterbook
+./start.sh
 ```
 
-The script builds the release preset, runs tests and demonstrates mutual TLS. For Linux deployment, release packages, backups and monitoring, see [operations](docs/operations.md).
+The script checks dependencies and prints installation commands if anything is missing. It then builds, runs tests and demonstrates mutual TLS. Use `./start.sh --check` to check dependencies without building. For Linux deployment, release packages, backups and monitoring, see [operations](docs/operations.md).
 
 ## Documentation
 
