@@ -1,12 +1,6 @@
 # Development
 
-```mermaid
-flowchart LR
-    A[Check dependencies] --> B[Build]
-    B --> C[Tests and TLS demo]
-    C --> D[Sanitizers and differential tests]
-    D --> E[CI]
-```
+**Workflow:** check dependencies → build → test → run sanitizers → CI.
 
 | Command | Purpose |
 | --- | --- |

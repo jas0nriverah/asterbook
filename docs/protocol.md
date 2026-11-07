@@ -2,11 +2,9 @@
 
 ## Wire format
 
-```mermaid
-flowchart LR
-    A[4-byte big-endian length] --> B[ASCII request: V1 + command]
-    B --> C[4-byte big-endian length]
-    C --> D[JSON response]
+```text
+Request:  [4-byte big-endian length][ASCII command]
+Response: [4-byte big-endian length][JSON result]
 ```
 
 | Field | Constraint |
@@ -45,15 +43,7 @@ Administrative commands require an authorized mTLS identity; insecure-local perm
 
 ## Responses and retries
 
-```mermaid
-flowchart TD
-    A[Request] --> B{Valid frame and command?}
-    B -->|No| C[Transport error; no sequence]
-    B -->|Yes| D{Previously seen client/request?}
-    D -->|Same payload| E[Saved response; duplicate true]
-    D -->|Different payload| F[REQUEST_CONFLICT]
-    D -->|New| G[Sequence, accepted, code, duplicate, events]
-```
+Invalid requests return a transport error without a sequence. Repeated requests return the saved result or `REQUEST_CONFLICT` when the payload differs.
 
 | Case | Client behavior |
 | --- | --- |
@@ -65,12 +55,7 @@ flowchart TD
 
 ## Offline ITCH
 
-```mermaid
-flowchart LR
-    A[Ordered displayed-order updates] --> B[Length-framed file]
-    B --> C[ITCH reconstructor]
-    C --> D[Final displayed orders]
-```
+Read an ordered, length-framed file and reconstruct the final displayed orders.
 
 ```sh
 build/release/asterbook_itch FILE

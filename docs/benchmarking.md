@@ -9,13 +9,7 @@
 | `bench/open_loop.py` | Scheduled requests against an existing server |
 | `bench/capacity.py` | Disposable standalone TLS server: latency, outcomes, resources, recovery |
 
-```mermaid
-flowchart LR
-    A[Fresh data and output directories] --> B[Set workload and offered rate]
-    B --> C[Run benchmark]
-    C --> D[Keep raw JSONL, plan and summary]
-    D --> E[Compare latency, errors and recovery]
-```
+**Workflow:** fresh directories → set workload → run → retain raw results → compare latency, errors and recovery.
 
 ```sh
 python3 tools/dev_certs.py /tmp/bench-certs

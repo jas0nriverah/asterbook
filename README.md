@@ -2,15 +2,7 @@
 
 AsterBook is a C++20 matching engine for simulated exchanges. It matches orders by price and arrival time, serves requests over TCP, and recovers state from a journal.
 
-```mermaid
-flowchart LR
-    C[Client] -->|mTLS| G[Gateway]
-    G --> S[Symbol shard]
-    S -->|Replicated| R[Standby sync]
-    S -->|Standalone| W[Local WAL and matching]
-    R --> W
-    W --> A[Response]
-```
+![Order processing](docs/assets/order-path.svg)
 
 | Matching | Reliability | Tooling |
 | --- | --- | --- |

@@ -1,0 +1,34 @@
+<?xml version="1.0" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="240" viewBox="0 0 1040 240" role="img" aria-labelledby="title desc">
+  <title id="title">Order processing</title>
+  <desc id="desc">Client request passes through authentication, a single-writer shard, durable journal, and matching before a response.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M1 1 L7 4 L1 7" fill="none" stroke="#52657d" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <rect width="1040" height="240" rx="8" fill="#ffffff"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="32" y="40" font-size="22" fill="#172b4d" font-weight="600">Order processing</text>
+    <rect x="32" y="78" width="176" height="84" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="48" y="107" font-size="17" fill="#172b4d" font-weight="600">Client</text>
+    <text x="48" y="133" font-size="14" fill="#52657d" font-weight="400">Order request</text>
+    <path d="M208 120 H228" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <rect x="232" y="78" width="176" height="84" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="248" y="107" font-size="17" fill="#172b4d" font-weight="600">Gateway</text>
+    <text x="248" y="133" font-size="14" fill="#52657d" font-weight="400">mTLS · validation</text>
+    <path d="M408 120 H428" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <rect x="432" y="78" width="176" height="84" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="448" y="107" font-size="17" fill="#172b4d" font-weight="600">Symbol shard</text>
+    <text x="448" y="133" font-size="14" fill="#52657d" font-weight="400">Queue · single writer</text>
+    <path d="M608 120 H628" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <rect x="632" y="78" width="176" height="84" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="648" y="107" font-size="17" fill="#172b4d" font-weight="600">Journal</text>
+    <text x="648" y="133" font-size="14" fill="#52657d" font-weight="400">Append · fsync</text>
+    <path d="M808 120 H828" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <rect x="832" y="78" width="176" height="84" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="848" y="107" font-size="17" fill="#172b4d" font-weight="600">Order book</text>
+    <text x="848" y="133" font-size="14" fill="#52657d" font-weight="400">Apply · respond</text>
+    <text x="32" y="208" font-size="15" fill="#52657d" font-weight="400">Replicated mode commits to the standby before the local journal. Each shard preserves its own order.</text>
+  </g>
+</svg>

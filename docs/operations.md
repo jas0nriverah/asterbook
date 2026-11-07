@@ -2,14 +2,7 @@
 
 ## Deploy
 
-```mermaid
-flowchart LR
-    A[Build package] --> B[Validate configuration]
-    B --> C[Stop and back up existing node]
-    C --> D[Install and start]
-    D --> E[Check authenticated READY]
-    E --> F[Route clients]
-```
+**Deploy:** build → validate configuration → stop and back up → install → start → check readiness → route clients.
 
 ```sh
 asterbook validate-config FILE
@@ -51,14 +44,7 @@ Use a dedicated client-auth certificate with CN `replicator`; keep its key on th
 
 ## Failover
 
-```mermaid
-flowchart TD
-    A[Fence old primary] --> B[Stop standby and back it up]
-    B --> C[Restore replacement standby]
-    C --> D[Promote original standby]
-    D --> E[Check readiness and route clients]
-    E --> F[Retry ambiguous requests]
-```
+![Manual failover workflow](assets/failover.svg)
 
 | Step | Required action |
 | --- | --- |
@@ -88,12 +74,7 @@ Never delete journals/locks manually. Compact nodes independently. The example [
 
 ## Monitoring
 
-```mermaid
-flowchart LR
-    A[Primary and standby] -->|Admin mTLS| E[Private exporter]
-    E --> P[Prometheus]
-    P --> R[Alerts]
-```
+**Monitoring:** primary / standby → authenticated exporter → Prometheus → alerts.
 
 Configure [exporter service](../deploy/asterbook-monitor.service), [scraping](../deploy/prometheus-scrape.yml) and [alerts](../deploy/alerts.yml). Keep the exporter HTTP listener private.
 

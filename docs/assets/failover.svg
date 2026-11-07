@@ -1,0 +1,31 @@
+<?xml version="1.0" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="400" viewBox="0 0 1040 400" role="img" aria-labelledby="title desc">
+  <title id="title">Manual failover</title>
+  <desc id="desc">Fence the old primary, seed a replacement standby from the stopped survivor, then promote the survivor and redirect clients.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M1 1 L7 4 L1 7" fill="none" stroke="#52657d" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <rect width="1040" height="400" rx="8" fill="#ffffff"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="32" y="40" font-size="22" fill="#172b4d" font-weight="600">Manual failover</text>
+    <rect x="32" y="76" width="976" height="55" rx="5" fill="#f7f9fc" stroke="#dce2e9"/>
+    <text x="49" y="110" font-size="16" fill="#32618f" font-weight="600">01</text>
+    <text x="100" y="110" font-size="17" fill="#172b4d" font-weight="600">Fence old primary</text>
+    <text x="330" y="110" font-size="16" fill="#52657d" font-weight="400">Stop and prevent restart, or isolate / power off.</text>
+    <rect x="32" y="143" width="976" height="55" rx="5" fill="#f7f9fc" stroke="#dce2e9"/>
+    <text x="49" y="177" font-size="16" fill="#32618f" font-weight="600">02</text>
+    <text x="100" y="177" font-size="17" fill="#172b4d" font-weight="600">Prepare replacement</text>
+    <text x="330" y="177" font-size="16" fill="#52657d" font-weight="400">Stop standby; back up and restore to a new standby.</text>
+    <rect x="32" y="210" width="976" height="55" rx="5" fill="#f7f9fc" stroke="#dce2e9"/>
+    <text x="49" y="244" font-size="16" fill="#32618f" font-weight="600">03</text>
+    <text x="100" y="244" font-size="17" fill="#172b4d" font-weight="600">Promote survivor</text>
+    <text x="330" y="244" font-size="16" fill="#52657d" font-weight="400">Start replacement; update survivor role and replica config.</text>
+    <rect x="32" y="277" width="976" height="55" rx="5" fill="#f7f9fc" stroke="#dce2e9"/>
+    <text x="49" y="311" font-size="16" fill="#32618f" font-weight="600">04</text>
+    <text x="100" y="311" font-size="17" fill="#172b4d" font-weight="600">Restore traffic</text>
+    <text x="330" y="311" font-size="16" fill="#52657d" font-weight="400">Start, check readiness, route clients; retry original IDs.</text>
+    <text x="32" y="376" font-size="15" fill="#172b4d" font-weight="400">A timeout is not fencing. Never run two writable primaries. Re-seed the old primary before reuse.</text>
+  </g>
+</svg>

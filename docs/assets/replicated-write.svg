@@ -1,0 +1,35 @@
+<?xml version="1.0" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="440" viewBox="0 0 1040 440" role="img" aria-labelledby="title desc">
+  <title id="title">Replicated write</title>
+  <desc id="desc">The standby persists the request first, then the primary persists it and compares results before acknowledging the client.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M1 1 L7 4 L1 7" fill="none" stroke="#52657d" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <rect width="1040" height="440" rx="8" fill="#ffffff"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="32" y="40" font-size="22" fill="#172b4d" font-weight="600">Replicated write</text>
+    <rect x="47" y="66" width="156" height="42" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="70" y="93" font-size="17" fill="#172b4d" font-weight="600">Client</text>
+    <path d="M125 108 L125 389" fill="none" stroke="#c7d0db" stroke-width="1" stroke-dasharray="5 5"/>
+    <rect x="407" y="66" width="156" height="42" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="430" y="93" font-size="17" fill="#172b4d" font-weight="600">Primary</text>
+    <path d="M485 108 L485 389" fill="none" stroke="#c7d0db" stroke-width="1" stroke-dasharray="5 5"/>
+    <rect x="797" y="66" width="156" height="42" rx="6" fill="#f7f9fc" stroke="#c7d0db"/>
+    <text x="820" y="93" font-size="17" fill="#172b4d" font-weight="600">Standby</text>
+    <path d="M875 108 L875 389" fill="none" stroke="#c7d0db" stroke-width="1" stroke-dasharray="5 5"/>
+    <path d="M125 145 H485" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="143" y="133" font-size="15" fill="#172b4d" font-weight="400">1  Send order</text>
+    <path d="M485 199 H875" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="503" y="187" font-size="15" fill="#172b4d" font-weight="400">2  Forward over mTLS</text>
+    <path d="M875 265 H485" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="503" y="253" font-size="15" fill="#172b4d" font-weight="400">3  Return durable result</text>
+    <path d="M485 367 H125" fill="none" stroke="#52657d" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="143" y="355" font-size="15" fill="#172b4d" font-weight="400">5  Acknowledge</text>
+    <text x="790" y="231" font-size="14" fill="#52657d" font-weight="400">Journal → fsync → apply</text>
+    <rect x="410" y="287" width="310" height="46" rx="6" fill="#edf3fa" stroke="#a8bfd9"/>
+    <text x="426" y="315" font-size="15" fill="#172b4d" font-weight="600">4  Persist locally; compare results</text>
+    <text x="32" y="420" font-size="14" fill="#52657d" font-weight="400">Any replication failure stops the primary. A lost reply can leave an unacknowledged write on the standby.</text>
+  </g>
+</svg>

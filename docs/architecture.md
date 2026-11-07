@@ -2,16 +2,7 @@
 
 ## Request path
 
-```mermaid
-flowchart LR
-    C[Client] --> T[mTLS gateway]
-    T --> V[Validate identity and request]
-    V --> Q[Bounded queue by symbol hash]
-    Q --> S[Single-writer shard]
-    S --> W[Journal and fsync]
-    W --> B[Apply to order book]
-    B --> R[JSON response]
-```
+![Order processing](assets/order-path.svg)
 
 Each shard owns its book, journal, queue and retry history.
 
@@ -25,19 +16,7 @@ Each shard owns its book, journal, queue and retry history.
 
 ## Replicated writes
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant P as Primary
-    participant S as Standby
-    C->>P: Order
-    P->>S: Forward over mTLS
-    S->>S: Journal, fsync, apply
-    S-->>P: Result
-    P->>P: Journal, fsync, apply
-    P->>P: Compare results
-    P-->>C: Acknowledge
-```
+![Replicated write sequence](assets/replicated-write.svg)
 
 | Condition | Action |
 | --- | --- |
@@ -51,14 +30,7 @@ Only the replication identity can write to the standby. [Failover is manual](ope
 
 ## WAL compaction
 
-```mermaid
-flowchart LR
-    A[Pause shard at queue barrier] --> B[Write checkpoint to temporary WAL]
-    B --> C[fsync temporary WAL]
-    C --> D[Atomic rename]
-    D --> E[fsync directory]
-    E --> F[Resume appending commands]
-```
+![WAL compaction](assets/wal-compaction.svg)
 
 | Preserved | Changed |
 | --- | --- |
