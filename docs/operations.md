@@ -1,22 +1,42 @@
 # Operations
 
-Use persistent local storage and an unprivileged service account. Keep code, configuration, and CA material protected from that account. Start from [server.conf.example](../deploy/server.conf.example); validate it with `asterbook validate-config FILE`. Stop with SIGTERM and wait for exit.
+## Deploy
 
-## TLS and access
-
-Mutual TLS is required. Client certificate common names identify clients; only names in the admin policy can run administrative commands. Keys must be regular files with no group/other permissions. The server rejects expired/not-yet-valid leaf certificates. Keep development certificates out of deployments.
-
-Rotate certificates, CA/CRL, and admin policy by validating new files and restarting. A configured CRL must be current and CA-signed. Restart disconnects revoked sessions. Without a CRL, rotate the trusted CA. `--insecure-local` is loopback-only and must not be exposed through a proxy.
-
-## Replication and failover
-
-Provision two nodes with the same shard count, capacities, and initial data. Use a dedicated client-auth certificate with common name `replicator`; keep its key on the primary. Use a separate replication CA if practical. Start the standby first, adding:
-
-```ini
-standby-identity=replicator
+```mermaid
+flowchart LR
+    A[Build package] --> B[Validate configuration]
+    B --> C[Stop and back up existing node]
+    C --> D[Install and start]
+    D --> E[Check authenticated READY]
+    E --> F[Route clients]
 ```
 
-Add these options to the primary's configuration:
+```sh
+asterbook validate-config FILE
+python3 scripts/package-release.py --version VERSION --build-dir build/release --output dist
+python3 scripts/release.py --root /opt/asterbook install ARCHIVE.tar.gz --sha256 TRUSTED_SHA256
+```
+
+Use a compatible Linux build, persistent local storage and an unprivileged service account. Start from [server.conf.example](../deploy/server.conf.example) and [asterbook.service](../deploy/asterbook.service). Stop with SIGTERM; wait for exit.
+
+| Item | Requirement |
+| --- | --- |
+| Code/config/CA | Protected from service-account writes |
+| Data | Owned by service account |
+| TLS keys | Regular files; owner-only permissions |
+| Client access | Certificate common name identifies client; admin policy gates maintenance |
+| Certificate rotation | Validate files, restart; use current CA-signed CRL or rotate CA |
+| Development mode | `--insecure-local` stays on loopback; never proxy it externally |
+| Upgrade interrupted | Run installer `status`; `rollback` changes binaries, not data |
+| Package verification | Obtain checksum independently; checksum is not a signature |
+
+## Replication setup
+
+Both nodes need identical initial data, shard count and capacities, plus normal server TLS credentials. Seed stopped nodes from verified backups. Start the standby first.
+
+| Standby config | Primary config |
+| --- | --- |
+| `standby-identity=replicator` | Options below |
 
 ```ini
 replica-host=192.0.2.20
@@ -27,43 +47,63 @@ replica-key=/etc/asterbook/replicator.key
 replica-ca=/etc/asterbook/standby-ca.crt
 ```
 
-`replica-host` is an IPv4 address; `replica-name` must match the standby server certificate. Both nodes still need their normal TLS server credentials and admin policies. Start empty nodes together, or seed a stopped node using a verified offline backup. Startup rejects different state, capacities, shard counts, or a peer that is not a standby.
+Use a dedicated client-auth certificate with CN `replicator`; keep its key on the primary. `replica-host` is IPv4; `replica-name` must match the standby certificate. Startup rejects mismatched state or roles.
 
-To fail over:
+## Failover
 
-1. Fence the old primary: stop it and prevent restart, or isolate/power it off using infrastructure controls. A timeout alone is not fencing.
-2. Stop the standby. Restore a verified copy of its data to a replacement standby and start that replacement with `standby-identity=replicator`.
-3. Remove `standby-identity` from the promoted node and configure its `replica-*` options for the replacement. Start it, check authenticated readiness, and redirect clients.
-4. Retry ambiguous requests with their original client/request IDs and payloads. Re-seed the old primary before returning it as a standby.
+```mermaid
+flowchart TD
+    A[Fence old primary] --> B[Stop standby and back it up]
+    B --> C[Restore replacement standby]
+    C --> D[Promote original standby]
+    D --> E[Check readiness and route clients]
+    E --> F[Retry ambiguous requests]
+```
 
-For an explicit single-node recovery, omit the promoted node's `replica-*` options. Subsequent writes then have only one durable copy. Do not run two writable primaries. Neither certificate identity nor a local file lock fences a different host.
+| Step | Required action |
+| --- | --- |
+| Fence | Stop and prevent restart, or isolate/power off old primary |
+| Promote | Start replacement first; remove `standby-identity` on promoted node and set its `replica-*` options |
+| Retry | Reuse original request IDs and payloads |
+| Rejoin | Re-seed old primary before reuse |
 
-## Compaction and backups
+**A timeout is not fencing. Never run two writable primaries.** For deliberate single-node recovery, omit `replica-*` on the promoted node; new writes then have one durable copy.
 
-Send authenticated `V1 COMPACT` to compact each shard at a queue barrier. It preserves deduplication and order IDs, blocks that shard while writing, and requires free space for both journal copies. Compact nodes independently. Never delete journals or lock files manually. Older binaries cannot recover compacted journals; retain a pre-upgrade backup for rollback.
+## Maintenance
 
-Backups are offline. Stop the service, then run:
+| Task | Procedure |
+| --- | --- |
+| Compact | Send authenticated `V1 COMPACT`; blocks each shard while writing |
+| Space | Keep room for both WAL copies; history capacity is unchanged |
+| Compatibility | Keep pre-upgrade backup; old binaries cannot read compacted WALs |
+| Backup | Stop service → verify hashes/replay → copy off-host |
+| Restore | Restore to new directory → verify → start → test retries |
 
 ```sh
 python3 tools/recovery.py backup --data-dir DATA --root BACKUPS --keep 7 --verifier build/release/recovery_verify
 python3 tools/recovery.py restore --backup BACKUPS/backup-NAME --destination NEW_DATA --verifier build/release/recovery_verify
 ```
 
-Backups verify hashes and replay before publication. Restore requires a new destination. Store copies off-host and rehearse restore/retry behavior. [Backup timer](../deploy/asterbook-backup.timer) and [script](../deploy/backup.sh) are examples: they stop the service and attempt to restart it even after backup failure. Configure and monitor the backup mount explicitly.
+Never delete journals/locks manually. Compact nodes independently. The example [backup timer](../deploy/asterbook-backup.timer) and [script](../deploy/backup.sh) stop/restart the service; configure and monitor the backup mount.
 
-## Deployment and upgrades
+## Monitoring
 
-Use [asterbook.service](../deploy/asterbook.service) with root-owned code/configuration, service-owned data, and private keys readable only by their owner. Build release packages on a compatible Linux baseline:
-
-```sh
-python3 scripts/package-release.py --version VERSION --build-dir build/release --output dist
-python3 scripts/release.py --root /opt/asterbook install ARCHIVE.tar.gz --sha256 TRUSTED_SHA256
+```mermaid
+flowchart LR
+    A[Primary and standby] -->|Admin mTLS| E[Private exporter]
+    E --> P[Prometheus]
+    P --> R[Alerts]
 ```
 
-Stop and back up before activation. The installer validates the manifest and publishes `current`/`previous` links with recoverable intent. Run `status` after an interrupted upgrade; `rollback` swaps installed versions but does not downgrade data. Obtain the expected checksum independently; it is not a signature.
+Configure [exporter service](../deploy/asterbook-monitor.service), [scraping](../deploy/prometheus-scrape.yml) and [alerts](../deploy/alerts.yml). Keep the exporter HTTP listener private.
 
-## Monitoring and limits
+| Signal | Meaning |
+| --- | --- |
+| `/healthz` | Exporter health |
+| `/readyz` | Upstream local WAL sync; check standby separately |
+| `/metrics` | Returns 503 if collection fails |
+| Histograms | Log2 nanosecond bins; service time excludes network |
+| Default bounds | 128 connections; 4 KiB requests; 32 MiB responses; 256 queued commands |
+| Per-shard capacity | 10,000 live orders; 1,000,000 history entries; no history eviction |
 
-Use [monitor.service](../deploy/asterbook-monitor.service), [Prometheus scrape configuration](../deploy/prometheus-scrape.yml), and [alert rules](../deploy/alerts.yml). Give the exporter its own admin certificate and keep its unauthenticated HTTP listener private. `/healthz` checks the exporter; `/readyz` checks upstream; `/metrics` returns 503 on collection failure. Monitor standby health separately.
-
-Defaults: 128 connections, 4 KiB requests, 32 MiB responses, 256 queued commands, 10,000 live orders and 1,000,000 history entries per shard. History has no eviction. Track disk and history capacity before exhaustion. Histograms are log2-nanosecond bin counters, not Prometheus histograms; service time excludes network latency.
+Track free disk and history capacity before exhaustion.

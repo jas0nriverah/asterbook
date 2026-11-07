@@ -1,6 +1,19 @@
 # Development
 
-`./start.sh` checks dependencies, builds, tests, and runs the TLS demo. `./start.sh --check` checks dependencies and configuration only.
+```mermaid
+flowchart LR
+    A[Check dependencies] --> B[Build]
+    B --> C[Tests and TLS demo]
+    C --> D[Sanitizers and differential tests]
+    D --> E[CI]
+```
+
+| Command | Purpose |
+| --- | --- |
+| `./start.sh --check` | Check dependencies/configuration |
+| `./start.sh` | Build, test and run TLS demo |
+
+## Test locally
 
 ```sh
 for preset in release asan tsan; do
@@ -11,9 +24,17 @@ done
 python3 reference/differential.py --server build/release/asterbook --seeds 100 --count 1000
 ```
 
-CI runs Linux/macOS tests, sanitizers, differential checks, fuzzing, cppcheck, Python dependency auditing, and Prometheus rule tests. Tests cover replication loss/promotion, compaction crash boundaries, and backup/restore. Keep runtime data, credentials, builds, and generated reports out of Git.
+| CI check | Coverage |
+| --- | --- |
+| Linux/macOS + sanitizers | Runtime correctness, memory and race errors |
+| Differential tests | Matching against reference model |
+| Recovery tests | Replication loss/promotion, compaction crashes, backup/restore |
+| Fuzzing | Protocol and ITCH parsers |
+| Static/security checks | cppcheck, Python dependency audit, dependency review |
+| Prometheus tests | Alert syntax and behavior |
 
-For Linux libFuzzer:
+<details>
+<summary>Linux fuzzing commands</summary>
 
 ```sh
 cmake -S . -B build/fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DASTERBOOK_FUZZ=ON -DBUILD_TESTING=OFF
@@ -23,4 +44,16 @@ build/fuzz/parser_fuzz build/fuzz/corpus/parser-corpus -runs=100000 -max_len=819
 build/fuzz/itch_fuzz build/fuzz/corpus/itch-corpus -runs=100000 -max_len=512
 ```
 
-Run alert checks with `promtool check rules deploy/alerts.yml` and `promtool test rules tests/alerts.test.yml`. Keep system OpenSSL and compiler runtimes patched; dependency auditing does not cover host packages.
+</details>
+
+<details>
+<summary>Alert checks</summary>
+
+```sh
+promtool check rules deploy/alerts.yml
+promtool test rules tests/alerts.test.yml
+```
+
+</details>
+
+Keep data, credentials, builds and generated reports out of Git. Patch host OpenSSL/compiler runtimes separately; dependency auditing does not cover host packages.

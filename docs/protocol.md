@@ -1,29 +1,94 @@
 # Protocol
 
-TCP messages are a 4-byte unsigned big-endian length followed by ASCII payload; replies use the same framing with JSON payload. Request bodies are limited to 4096 bytes. Multiple frames may share a read and frames may be split across reads. Every request begins `V1 `; tokens are separated by single spaces. Identifiers are 1–64 ASCII letters, digits, `_`, `-`, or `.`, and numbers are positive decimal signed-64-bit values without leading zeroes.
+## Wire format
 
+```mermaid
+flowchart LR
+    A[4-byte big-endian length] --> B[ASCII request: V1 + command]
+    B --> C[4-byte big-endian length]
+    C --> D[JSON response]
 ```
+
+| Field | Constraint |
+| --- | --- |
+| Request body | Up to 4096 bytes; single spaces between tokens |
+| Identifiers | 1–64 ASCII letters, digits, `_`, `-`, `.` |
+| Numbers | Positive signed-64-bit decimal; no leading zeroes |
+| TCP reads | May contain partial or multiple frames |
+
+## Commands
+
+```text
 V1 NEW client request symbol order_id BUY|SELL GTC|IOC price quantity
 V1 CANCEL client request symbol order_id
 V1 REPLACE client request symbol order_id new_id price quantity
-V1 STATE
-V1 METRICS
-V1 CHECKPOINT
-V1 COMPACT
-V1 DIGEST
-V1 READY
 ```
 
-NEW matches better prices first and FIFO at each price, at the resting order's price. Unfilled GTC quantity rests; IOC remainder emits EXPIRE. CANCEL requires the owner and a live order. REPLACE validates before removing the old order, always loses priority, and behaves as GTC. IDs are never reused within a shard, even after completion. Same client/request and identical command returns the original response with `duplicate:true`; a conflicting command returns `REQUEST_CONFLICT`. Retention is bounded and when full new requests fail closed rather than evicting deduplication history. Under sharding the ID and client/request scopes are per shard, so use globally unique IDs to avoid ambiguity.
+| Order | Behavior |
+| --- | --- |
+| NEW | Best price then FIFO; trade at resting price |
+| GTC / IOC | Rest remainder / expire remainder |
+| CANCEL | Requires owner and live order |
+| REPLACE | Validate before removal; loses priority; GTC |
+| IDs | Never reused within shard; prefer globally unique IDs |
 
-Successful or business-rejected sequenced commands return `sequence`, `accepted`, `code`, `duplicate` and ordered `events` (CANCEL, TRADE, REST, EXPIRE). A malformed frame or command has a transport error object such as `BAD_REQUEST` and does not consume a sequence. Overload may reject or close a connection; a disconnect leaves the result ambiguous, so retry the exact request identity and payload. For multiple shards, command responses wrap `result` with `shard`; sequence is per shard. STATE, CHECKPOINT, COMPACT, DIGEST, and READY aggregate per-shard responses with `atomic:false`, not a single cross-shard point in time. METRICS describes gateway counters. All non-order commands are administrative operations: mutual TLS requires an authorized administrator identity; insecure-local mode permits local clients.
+Administrative commands require an authorized mTLS identity; insecure-local permits local clients.
 
-## Offline ITCH reconstruction
+| Command | Result |
+| --- | --- |
+| `V1 STATE` | Book state |
+| `V1 METRICS` | Gateway counters |
+| `V1 CHECKPOINT` | Legacy checkpoint |
+| `V1 COMPACT` | Atomically replace each shard WAL with embedded checkpoint |
+| `V1 DIGEST` | Full checkpoint hash and standby role |
+| `V1 READY` | Local journal sync check; not replica health |
 
-`build/release/asterbook_itch FILE` and `python3 reference/itch.py FILE` read a sequence of two-byte big-endian payload lengths followed by Nasdaq TotalView-ITCH 5.0 messages. The supported displayed-order subset is A/F (add), E/C (execution), X (cancel), D (delete) and U (replace). Prices use units of 1/10,000 dollars. Executions reduce the referenced order and are not sent to the matching engine. See the [ITCH specification](https://nasdaqtrader.com/content/technicalsupport/specifications/dataproducts/NQTVITCHSpecification.pdf), sections 1.3–1.4.
+## Responses and retries
 
-The custom framing is not SoupBinTCP or MoldUDP64. Input must be a complete, ordered stream of supported updates; unsupported messages and invalid lengths, references, reductions or stock locates stop processing. Real feeds require an upstream filter that understands other message types. Output is the final displayed orders, not a complete market picture. There is no feed transport, gap recovery, symbol directory, trading actions, trade statistics or broken-trade handling.
+```mermaid
+flowchart TD
+    A[Request] --> B{Valid frame and command?}
+    B -->|No| C[Transport error; no sequence]
+    B -->|Yes| D{Previously seen client/request?}
+    D -->|Same payload| E[Saved response; duplicate true]
+    D -->|Different payload| F[REQUEST_CONFLICT]
+    D -->|New| G[Sequence, accepted, code, duplicate, events]
+```
 
-`asterbook_itch --sequenced FILE` reads an eight-byte big-endian sequence before each length and payload. The native `asterbook::itch::Reconstructor::apply_sequenced` likewise checks caller-supplied monotonic sequences. A gap, duplicate, overflow or invalid message poisons the session until `reset()` clears state; the envelope does not recover missing messages. Defaults allow one million live and two million seen references, configurable in the constructor. Validation errors preserve state; discard the instance after allocation failure. Stock and attribution fields must be printable ASCII.
+| Case | Client behavior |
+| --- | --- |
+| Disconnect/overload | Result may be ambiguous; retry exact identity and payload |
+| History full | New requests rejected; history is never evicted |
+| Events | Ordered CANCEL, TRADE, REST, EXPIRE |
+| Multiple shards | Responses wrap `result` with `shard`; sequence and retry scope are per shard |
+| Aggregated admin state | `atomic:false`; no single cross-shard snapshot |
 
-COMPACT atomically replaces each shard WAL with an embedded checkpoint. DIGEST returns the complete checkpoint hash and standby role. READY checks local journal sync; monitor replica health separately.
+## Offline ITCH
+
+```mermaid
+flowchart LR
+    A[Ordered displayed-order updates] --> B[Length-framed file]
+    B --> C[ITCH reconstructor]
+    C --> D[Final displayed orders]
+```
+
+```sh
+build/release/asterbook_itch FILE
+python3 reference/itch.py FILE
+build/release/asterbook_itch --sequenced FILE
+```
+
+| Item | Supported behavior |
+| --- | --- |
+| Messages | A/F add, E/C execution, X cancel, D delete, U replace |
+| Framing | 2-byte big-endian length + ITCH 5.0 payload; not SoupBinTCP/MoldUDP64 |
+| Sequenced mode | Adds 8-byte big-endian sequence before each frame |
+| Prices | 1/10,000 dollars |
+| Executions | Reduce referenced order; never enter matching engine |
+| Input errors | Unsupported messages, invalid lengths/references/reductions/locates stop processing |
+| Sequence errors | Gap, duplicate or overflow poisons session until `reset()`; no gap recovery |
+| Native limits | Default 1M live / 2M seen references; constructor-configurable |
+| Native state | Validation errors preserve state; discard after allocation failure |
+| Text fields | Stock/attribution must be printable ASCII |
+
+Filter real feeds upstream. No feed transport, symbol directory, trading actions, trade statistics or broken-trade handling. Output is not a complete market picture. See [ITCH 5.0 specification](https://nasdaqtrader.com/content/technicalsupport/specifications/dataproducts/NQTVITCHSpecification.pdf), §§1.3–1.4.
