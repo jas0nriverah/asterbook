@@ -5,6 +5,9 @@
 #include <string>
 namespace asterbook {
 struct GatewayOptions {
+  std::string standby_identity;
+  std::string replica_host, replica_name, replica_cert, replica_key, replica_ca;
+  uint16_t replica_port = 9000;
   std::string data_dir = "asterbook-data";
   std::string bind = "127.0.0.1";
   uint16_t port = 9000;

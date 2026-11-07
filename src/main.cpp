@@ -15,7 +15,10 @@ int main(int argc, char **argv) {
            "N] [--shards N] [--max-live N] [--max-history N] [--idle-timeout-ms N] "
            "[--frame-timeout-ms N] [--queue-timeout-ms N] [--batch-size N] [--allocator "
            "baseline|pooled] [--insecure-local | --tls-cert FILE --tls-key FILE --tls-ca FILE "
-           "--admin-policy FILE] | replay\n";
+           "--admin-policy FILE] [--standby-identity CLIENT | --replica-host IPV4 --replica-port "
+           "PORT "
+           "--replica-name DNS --replica-cert FILE --replica-key FILE --replica-ca FILE] | "
+           "replay\n";
     return 2;
   }
   std::string mode = argv[1];
@@ -104,7 +107,19 @@ int main(int argc, char **argv) {
         std::cerr << "invalid allocator\n";
         return 2;
       }
-    } else if (a == "--tls-cert")
+    } else if (a == "--standby-identity")
+      o.standby_identity = v;
+    else if (a == "--replica-host")
+      o.replica_host = v;
+    else if (a == "--replica-name")
+      o.replica_name = v;
+    else if (a == "--replica-cert")
+      o.replica_cert = v;
+    else if (a == "--replica-key")
+      o.replica_key = v;
+    else if (a == "--replica-ca")
+      o.replica_ca = v;
+    else if (a == "--tls-cert")
       o.tls_cert = v;
     else if (a == "--tls-key")
       o.tls_key = v;
@@ -118,12 +133,13 @@ int main(int argc, char **argv) {
       o.data_dir = v;
     else if (a == "--bind")
       o.bind = v;
-    else if (a == "--port" || a == "--queue-capacity" || a == "--shards" || a == "--max-live" ||
-             a == "--max-history" || a == "--idle-timeout-ms" || a == "--frame-timeout-ms" ||
-             a == "--queue-timeout-ms" || a == "--batch-size") {
+    else if (a == "--port" || a == "--replica-port" || a == "--queue-capacity" || a == "--shards" ||
+             a == "--max-live" || a == "--max-history" || a == "--idle-timeout-ms" ||
+             a == "--frame-timeout-ms" || a == "--queue-timeout-ms" || a == "--batch-size") {
       unsigned long n = 0;
       auto [p, e] = std::from_chars(v.data(), v.data() + v.size(), n);
-      if (e != std::errc{} || p != v.data() + v.size() || n == 0 || (a == "--port" && n > 65535) ||
+      if (e != std::errc{} || p != v.data() + v.size() || n == 0 ||
+          ((a == "--port" || a == "--replica-port") && n > 65535) ||
           (a == "--batch-size" && n > 1024) || (a == "--queue-capacity" && n > 65536) ||
           (a == "--shards" && n > 16) || (a == "--max-live" && n > 10000) ||
           (a == "--max-history" && n > 1000000) ||
@@ -132,7 +148,9 @@ int main(int argc, char **argv) {
         std::cerr << "invalid numeric option\n";
         return 2;
       }
-      if (a == "--port")
+      if (a == "--replica-port")
+        o.replica_port = static_cast<uint16_t>(n);
+      else if (a == "--port")
         o.port = static_cast<uint16_t>(n);
       else if (a == "--queue-capacity")
         o.queue_capacity = n;

@@ -44,6 +44,58 @@ int main() {
     assert(e.execute(c).code == "REQUEST_CONFLICT");
   }
   {
+    auto compact_wal = (dir / "compact").string();
+    auto compact_snap = (dir / "compact-snapshot").string();
+    std::string compact_state;
+    c.qty = 3;
+    {
+      DurableEngine e(compact_wal);
+      e.execute(c);
+      e.snapshot(compact_snap);
+      e.compact();
+      assert(e.execute(c).duplicate);
+      auto next = c;
+      next.id = "next";
+      next.request = "next";
+      assert(e.execute(next).accepted);
+      compact_state = e.state();
+      bool locked = false;
+      try {
+        DurableEngine concurrent(compact_wal);
+      } catch (...) {
+        locked = true;
+      }
+      assert(locked);
+      e.compact();
+    }
+    {
+      DurableEngine e(compact_wal, 100000, 1000000, compact_snap);
+      assert(e.state() == compact_state);
+      assert(e.execute(c).duplicate);
+      auto next = c;
+      next.id = "tail";
+      next.request = "tail";
+      assert(e.execute(next).accepted);
+      compact_state = e.state();
+    }
+    {
+      DurableEngine e(compact_wal);
+      assert(e.state() == compact_state);
+    }
+    {
+      std::fstream f(compact_wal, std::ios::in | std::ios::out | std::ios::binary);
+      f.seekp(40);
+      f.put('x');
+    }
+    bool corrupt = false;
+    try {
+      DurableEngine e(compact_wal);
+    } catch (...) {
+      corrupt = true;
+    }
+    assert(corrupt);
+  }
+  {
     auto empty = (dir / "empty").string();
     std::ofstream out(empty);
     out.close();

@@ -6,7 +6,8 @@ AsterBook is a C++20 matching engine for simulated exchanges. It matches orders 
 
 - Limit, immediate-or-cancel, cancellation and replacement orders
 - Single-writer symbol shards with deterministic replay
-- Synchronous journal, checkpoints and bounded request deduplication
+- Synchronous journal, atomic WAL compaction and bounded request deduplication
+- Synchronous mTLS primary/standby replication with fenced manual failover
 - Bounded TCP gateway with mutual TLS and certificate-based identities
 - Offline ITCH displayed-order reconstruction
 - Reference-model tests, fault injection, fuzzing and benchmark tools

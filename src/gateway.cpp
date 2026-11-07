@@ -3,6 +3,7 @@
 #include "asterbook/journal.hpp"
 #include "asterbook/queue.hpp"
 #include "asterbook/tls.hpp"
+#include "asterbook/replication.hpp"
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <fcntl.h>
@@ -135,6 +136,25 @@ bool validate_gateway_options(const GatewayOptions &opt) {
   TlsContext tls;
   std::set<std::string> admins;
   try {
+    bool replication = !opt.replica_host.empty();
+    if (!opt.standby_identity.empty()) {
+      Request identity_check;
+      std::string error;
+      if (!parse_request("V1 CANCEL " + opt.standby_identity + " r X o", identity_check, error))
+        throw std::runtime_error("invalid standby identity");
+    }
+    if ((!opt.standby_identity.empty() && replication) ||
+        (opt.insecure_local && (replication || !opt.standby_identity.empty())) ||
+        (!replication && (!opt.replica_name.empty() || !opt.replica_cert.empty() ||
+                          !opt.replica_key.empty() || !opt.replica_ca.empty())))
+      throw std::runtime_error("invalid replication role");
+    if (replication) {
+      in_addr replica_address{};
+      if (opt.replica_name.empty() ||
+          inet_pton(AF_INET, opt.replica_host.c_str(), &replica_address) != 1)
+        throw std::runtime_error("invalid replica address or name");
+      Replica check(opt);
+    }
     if (opt.insecure_local) {
       if (!loopback || !opt.tls_cert.empty() || !opt.tls_key.empty() || !opt.tls_ca.empty() ||
           !opt.admin_policy.empty() || !opt.tls_crl.empty())
@@ -235,6 +255,11 @@ int run_gateway(const GatewayOptions &opt) {
   };
   std::vector<std::unique_ptr<BoundedQueue<Work>>> queues;
   std::vector<std::thread> workers;
+  std::unique_ptr<Replica> replica;
+  auto digest_json = [&](const DurableEngine &engine) {
+    return "{\"standby\":" + std::string(opt.standby_identity.empty() ? "false" : "true") +
+           ",\"digest\":\"" + checkpoint_digest(engine.checkpoint()) + "\"}";
+  };
   int lockfd = -1;
   try {
     std::filesystem::create_directories(opt.data_dir);
@@ -279,6 +304,25 @@ int run_gateway(const GatewayOptions &opt) {
       history_usage[i] = engines.back()->sequence();
       queues.push_back(std::make_unique<BoundedQueue<Work>>(opt.queue_capacity));
     }
+    if (!opt.replica_host.empty()) {
+      replica = std::make_unique<Replica>(opt);
+      std::string expected;
+      for (size_t i = 0; i < opt.shards; ++i) {
+        auto digest =
+            "{\"standby\":true,\"digest\":\"" + checkpoint_digest(engines[i]->checkpoint()) + "\"}";
+        if (opt.shards == 1)
+          expected = digest;
+        else {
+          if (i)
+            expected += ',';
+          expected += "{\"shard\":" + std::to_string(i) + ",\"result\":" + digest + "}";
+        }
+      }
+      if (opt.shards > 1)
+        expected = "{\"atomic\":false,\"shards\":[" + expected + "]}";
+      if (replica->request("V1 DIGEST") != expected)
+        throw std::runtime_error("replica state mismatch");
+    }
     for (size_t i = 0; i < opt.shards; ++i)
       workers.emplace_back([&, i, engine = std::move(engines[i]), snap = snapshots[i]]() mutable {
         Work w;
@@ -298,7 +342,12 @@ int run_gateway(const GatewayOptions &opt) {
             for (const auto &item : work)
               observe(queue_hist, service_start - item.admitted);
             std::vector<std::string> outputs(work.size());
-            if (work.front().request.kind == RequestKind::State)
+            if (work.front().request.kind == RequestKind::Digest) {
+              outputs[0] = digest_json(*engine);
+            } else if (work.front().request.kind == RequestKind::Compact) {
+              engine->compact();
+              outputs[0] = "{\"ok\":true}";
+            } else if (work.front().request.kind == RequestKind::State)
               outputs[0] = engine->state();
             else if (work.front().request.kind == RequestKind::Ready) {
               std::string journal = opt.shards == 1
@@ -325,7 +374,20 @@ int run_gateway(const GatewayOptions &opt) {
                 }
               }
               auto before_sync = engine->sync_count();
+              std::vector<std::string> replicated;
+              if (replica)
+                for (const auto &command : commands)
+                  replicated.push_back(replica->request(command_wire(command)));
               auto results = engine->execute_batch(commands);
+              if (replica) {
+                for (size_t j = 0; j < results.size(); ++j) {
+                  auto expected = result_json(results[j]);
+                  if (opt.shards > 1)
+                    expected = "{\"shard\":" + std::to_string(i) + ",\"result\":" + expected + "}";
+                  if (expected != replicated[j])
+                    throw std::runtime_error("replica result mismatch");
+                }
+              }
               history_usage[i] = engine->sequence();
               wal_syncs += engine->sync_count() - before_sync;
               if (!commands.empty())
@@ -614,7 +676,9 @@ int run_gateway(const GatewayOptions &opt) {
           c.last = now;
           Request req;
           std::string err;
-          if (c.tokens < 1) {
+          bool replication_peer =
+              !opt.standby_identity.empty() && c.principal == opt.standby_identity;
+          if (c.tokens < 1 && !replication_peer) {
             ++rate_limited;
             c.output = frame(error_json("RATE_LIMIT"));
           } else if (!parse_request(payload, req, err)) {
@@ -623,9 +687,14 @@ int run_gateway(const GatewayOptions &opt) {
             c.output = frame(error_json(err));
           } else {
             --c.tokens;
-            if (c.ssl && req.kind == RequestKind::Command && req.command.client != c.principal) {
+            if (!opt.standby_identity.empty() && req.kind == RequestKind::Command &&
+                !replication_peer) {
+              c.output = frame(error_json("STANDBY_READ_ONLY"));
+            } else if (c.ssl && req.kind == RequestKind::Command &&
+                       req.command.client != c.principal && !replication_peer) {
               c.output = frame(error_json("IDENTITY_MISMATCH"));
-            } else if (c.ssl && req.kind != RequestKind::Command && !admins.count(c.principal)) {
+            } else if (c.ssl && req.kind != RequestKind::Command && !admins.count(c.principal) &&
+                       !replication_peer) {
               c.output = frame(error_json("FORBIDDEN"));
             } else if (req.kind == RequestKind::Metrics) {
               size_t depth = 0;

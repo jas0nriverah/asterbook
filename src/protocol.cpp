@@ -46,6 +46,11 @@ bool parse_request(std::string_view input, Request &out, std::string &error) {
     if (end < input.size() && pos == input.size())
       return false;
   }
+  if (t.size() == 1 && (t[0] == "COMPACT" || t[0] == "DIGEST")) {
+    r.kind = t[0] == "COMPACT" ? RequestKind::Compact : RequestKind::Digest;
+    out = std::move(r);
+    return true;
+  }
   if (t.size() == 1 && t[0] == "STATE") {
     r.kind = RequestKind::State;
     out = std::move(r);
